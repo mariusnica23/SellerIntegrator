@@ -36,6 +36,7 @@ B2B, FBE, SGR și storno se procesează separat. Integrarea nu modifică stocuri
 4. PARAMETRIZARE
 Salvează (Ctrl+S) păstrează câmpurile la fiecare deschidere. Reîncarcă setările revine la ultima salvare. Parolele sunt protejate cu Windows DPAPI. La salvare se păstrează și copia precedentă settings.backup.json.
 Datele sunt în %LOCALAPPDATA%/TrendyolFGO. Programul poate fi actualizat fără ștergerea lor. Nu distribui folderul de date altor persoane.
+Într-o instalare portabilă, dacă există folderul Date lângă TrendyolFGO.exe, acesta este folosit automat atât la dublu clic, cât și din scurtătură. Păstrează acel folder la actualizare. Butonul Deschide folderul de date arată locația activă.
 
 Mapare Excel comună: trei coloane TEXT — cod_fgo, ean_trendyol, ean_emag. Un rând asociază articolul FGO cu EAN-ul folosit pe fiecare platformă; una dintre cele două platforme poate rămâne goală. Același EAN poate apărea o singură dată pe platformă. Mai multe EAN-uri pot indica același articol FGO, pe rânduri separate. Păstrează zerourile de la început.
 Exportă Excel comun creează fișierul cu toate asocierile salvate. Importă Excel comun adaugă rândurile noi și actualizează asocierile pentru codurile incluse; rândurile omise și mapările celeilalte platforme rămân în sistem. Un cod asociat unui alt articol FGO folosește datele noului articol. Baza locală catalog.sqlite3 păstrează maparea chiar dacă Excelul original nu mai este disponibil.

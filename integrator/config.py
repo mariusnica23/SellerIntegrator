@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 
@@ -150,6 +151,11 @@ def load_settings(path: Path) -> Settings:
 
 
 def data_root():
+    # A portable installation must use the same data for Explorer and helper launches.
+    if getattr(sys, "frozen", False):
+        portable = Path(sys.executable).resolve().parent / "Date"
+        if portable.is_dir():
+            return portable
     return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "TrendyolFGO"
 
 

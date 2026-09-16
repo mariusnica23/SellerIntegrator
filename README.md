@@ -10,6 +10,8 @@ Aplicație desktop în română: comenzi Trendyol și eMAG, facturi FGO, mapare 
 
 Nu este necesară instalarea separată a Python. Datele se păstrează în `%LOCALAPPDATA%/TrendyolFGO`, separat de program; actualizarea executabilului nu le șterge. Cheile și parolele sunt criptate cu Windows DPAPI, pentru utilizatorul Windows curent.
 
+Pentru o instalare portabilă configurată cu folderul `Date` lângă executabil, acesta devine folderul de date folosit la pornire. Păstrează-l la actualizare și nu îl distribui altor persoane: conține configurarea și istoricul propriu. Arhivele publicate pe GitHub nu includ acest folder.
+
 Instrucțiuni pentru fiecare tab: [GHID.md](GHID.md).
 
 ## Funcții
