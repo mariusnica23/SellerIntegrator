@@ -46,7 +46,9 @@ def load_shared_mapping(path):
             for platform in result:
                 ean=values[f"ean_{platform}"]
                 if not ean:continue
-                if not ean.isascii() or not ean.isdigit() or not 6<=len(ean)<=14:
+                if platform == "trendyol" and (len(ean)>128 or not ean.isprintable()):
+                    raise ValueError(f"Rândul {number}: cod Trendyol invalid; maximum 128 de caractere TEXT.")
+                if platform == "emag" and (not ean.isascii() or not ean.isdigit() or not 6<=len(ean)<=14):
                     raise ValueError(f"Rândul {number}: EAN {platform} invalid; folosește 6–14 cifre ca TEXT.")
                 if ean in result[platform]:
                     raise ValueError(f"Rândul {number}: EAN duplicat pentru {platform}: {ean}.")

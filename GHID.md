@@ -18,6 +18,7 @@ Lista comună pentru ambele platforme, cu o coloană Platformă și toate câmpu
 Actualizează ambele platforme folosește perioadele din taburile respective; eMAG este omis dacă nu are utilizator configurat. Poți selecta comenzi de pe ambele platforme în același lot; fiecare comandă/colet are propria factură.
 Bifează comenzile dorite și apasă Facturează comenzi selectate. Se selectează toate liniile coletului. Bara orizontală permite vizualizarea tuturor coloanelor.
 Problemele lotului trebuie corectate înaintea emiterii. Simpla prezență în listă nu înseamnă că documentul poate fi emis.
+După confirmarea previzualizării, o eroare la o comandă nu oprește încercarea celorlalte comenzi selectate. Rezultatul afișează separat comenzile cu erori. O emitere cu rezultat incert nu este reîncercată automat; rămâne pentru verificare în FGO.
 
 3. eMAG
 Configurarea se face în Parametrizare → Date de bază & conexiuni → eMAG RO / BG / HU. Completează utilizator, parolă și serie FGO pentru fiecare piață activă, apoi Salvează.
@@ -37,8 +38,10 @@ Salvează (Ctrl+S) păstrează câmpurile la fiecare deschidere. Reîncarcă set
 Datele sunt în %LOCALAPPDATA%/TrendyolFGO. Programul poate fi actualizat fără ștergerea lor. Nu distribui folderul de date altor persoane.
 
 Mapare Excel comună: trei coloane TEXT — cod_fgo, ean_trendyol, ean_emag. Un rând asociază articolul FGO cu EAN-ul folosit pe fiecare platformă; una dintre cele două platforme poate rămâne goală. Același EAN poate apărea o singură dată pe platformă. Mai multe EAN-uri pot indica același articol FGO, pe rânduri separate. Păstrează zerourile de la început.
-Exportă Excel comun creează fișierul cu asocierile curente. Completează și importă-l cu Importă Excel comun, apoi Preia articolele din FGO. Denumirea, UM și TVA sunt citite din FGO; prețul și cantitatea vin din comandă. Importul păstrează o copie locală; schimbările ulterioare ale originalului necesită reimport.
-Maparea Trendyol veche cu EAN și cod FGO este convertită automat când nu există o mapare eMAG veche. Originalul și parametrizările sunt păstrate. Mapările vechi incompatibile rămân active până la importarea Excelului comun; identificatorii product_id vechi nu sunt transformați în EAN-uri presupuse.
+Exportă Excel comun creează fișierul cu toate asocierile salvate. Importă Excel comun adaugă rândurile noi și actualizează asocierile pentru codurile incluse; rândurile omise și mapările celeilalte platforme rămân în sistem. Un cod asociat unui alt articol FGO folosește datele noului articol. Baza locală catalog.sqlite3 păstrează maparea chiar dacă Excelul original nu mai este disponibil.
+Denumirea, UM și TVA sunt citite o singură dată pentru fiecare articol FGO și se păstrează la redeschidere, separat după firmă și mediu. Preia doar articolele noi citește doar codurile care nu sunt salvate. Reîmprospătează din FGO recitește explicit toate articolele mapate: folosește-l după schimbări de denumire, UM sau TVA în FGO. Prețul și cantitatea continuă să vină din comandă.
+EAN-urile ofertelor eMAG citite prin API sunt păstrate local, separat după cont și piață. Dacă o comandă furnizează EAN-uri actualizate, acestea înlocuiesc valorile salvate pentru ofertă. Verificările comenzilor și existenței facturilor continuă la actualizare și înaintea operațiunilor.
+Coloana ean_trendyol acceptă și coduri barcode alfanumerice, păstrate exact ca TEXT. Maparea Trendyol veche cu barcode și cod FGO este convertită automat când nu există o mapare eMAG veche. Originalul și parametrizările sunt păstrate. Identificatorii product_id vechi nu sunt transformați în EAN-uri presupuse.
 Conexiuni API: mediu demo / test / production, Seller ID și cheile Trendyol; CUI fără RO, cheia privată FGO, URL-ul integrării înregistrat în FGO și seriile pentru fiecare țară. URL-ul integrării este un identificator acceptat în contul FGO; nu inventa un site comercial.
 Istoricul Trendyol este separat după mediu, CUI și Seller ID; istoricul eMAG după mediu și CUI. Schimbarea identității poate afișa alt profil. Revenirea la datele anterioare regăsește istoricul.
 
@@ -55,7 +58,7 @@ Factură prezentă în marketplace cu link diferit: existența este confirmată,
 Erorile de autentificare, rețea sau răspuns necunoscut nu înseamnă că factura a fost ștearsă.
 
 Verifică în FGO: răspunsul la emitere s-a pierdut. Verifică în contul FGO. Dacă există, folosește Asociază după verificare, cu seria și numărul. Dacă nu există, butonul Am verificat: factura NU există permite reluarea. Nu confirma lipsa fără verificare.
-Backup istoric salvează baza locală. Configurarea și mapările sunt fișiere separate. DPAPI permite decriptarea cheilor numai cu utilizatorul Windows corespunzător.
+Backup istoric salvează baza de facturi a platformei. Pentru o copie completă păstrează și catalog.sqlite3, settings.json și folderul profiles din folderul de date. DPAPI permite decriptarea cheilor numai cu utilizatorul Windows corespunzător.
 
 6. RAPOARTE
 Alege datele de început/sfârșit sau un an și Tot anul, apoi țara și marketplace-ul. Actualizează raportul recalculează din comenzile stocate local; pentru date recente folosește mai întâi Preia comenzi.

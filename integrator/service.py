@@ -10,11 +10,31 @@ from .domain import READY_STATUSES, build_draft, fiscal_budget, signature, packa
 from .store import claim_conflicts
 
 
+def issue_batch(drafts, services, progress=lambda _: None):
+    """Attempt each approved package once; a failure never retries that invoice."""
+    count, failures, attempted = 0, [], set()
+    for draft in drafts:
+        pid = draft.package_id
+        if pid in attempted:
+            continue
+        attempted.add(pid)
+        progress(f"Emit factura pentru {pid}…")
+        try:
+            services[pid].issue(draft)
+            count += 1
+        except Exception as exc:
+            failures.append(f"{pid}: {exc}")
+    return count, failures
+
+
 class Service:
-    def __init__(self, settings, store, mapping, trendyol=None, fgo=None, other_stores=()):
+    def __init__(self, settings, store, mapping, trendyol=None, fgo=None, other_stores=(), catalog=None):
         self.settings, self.store, self.mapping = settings, store, mapping
         self._trendyol, self._fgo = trendyol, fgo
         self.other_stores = other_stores
+        self.catalog = catalog
+        if catalog and settings.mode != "demo":
+            self.mapping = catalog.hydrate(settings.fgo_scope(), mapping)
 
     @property
     def trendyol(self):
@@ -25,7 +45,7 @@ class Service:
     @property
     def fgo(self):
         if self._fgo is None:
-            self._fgo = DemoFgo() if self.settings.mode == "demo" else FgoAPI(self.settings)
+            self._fgo = DemoFgo() if self.settings.mode == "demo" else FgoAPI(self.settings, catalog=self.catalog)
         return self._fgo
 
     def sync(self, start, end, progress=lambda _: None):
@@ -87,19 +107,12 @@ class Service:
         else:
             self.store.transition(pid, "upload_uncertain", current, error="Factura există în FGO; starea/linkul din Trendyol necesită verificare înaintea unei noi încărcări.")
 
-    def resolve_articles(self, barcodes=None, progress=lambda _: None):
+    def resolve_articles(self, barcodes=None, progress=lambda _: None, force=False):
         if self.settings.mode == "demo":
             return []
         chosen = [p for barcode, p in self.mapping.items() if p.fgo_code and (barcodes is None or barcode in barcodes)]
         if not chosen:
             return []
-        # Clear old values before any request so failed refreshes cannot leave valid-looking rows.
-        for p in chosen:
-            self.mapping[p.barcode] = replace(p, name="", unit="", fgo_verified=False)
-        try:
-            fgo = self.fgo
-        except ValueError as exc:
-            return [str(exc)]
         failures = []
         grouped = {}
         for p in chosen:
@@ -107,7 +120,18 @@ class Service:
         for index, (code, products) in enumerate(grouped.items(), 1):
             progress(f"Preiau articolul FGO {index}/{len(grouped)} • {code}…")
             try:
-                article = fgo.get_article(code)
+                article = self.catalog.article(self.settings.fgo_scope(), code) if self.catalog and not force else None
+                if article is None:
+                    if force and self.catalog:
+                        self.catalog.forget(self.settings.fgo_scope(), "fgo", code)
+                    for p in products:
+                        self.mapping[p.barcode] = replace(p, name="", unit="", fgo_verified=False)
+                    fgo = self.fgo
+                    if force and hasattr(fgo, "articles"):
+                        fgo.articles.pop(code, None)
+                    article = fgo.get_article(code)
+                    if self.catalog:
+                        self.catalog.put(self.settings.fgo_scope(), "fgo", code, article)
                 for p in products:
                     self.mapping[p.barcode] = replace(p, **article, fgo_verified=True)
             except ApiError as exc:

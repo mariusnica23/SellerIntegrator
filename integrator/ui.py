@@ -19,9 +19,10 @@ from .config import Settings, load_settings, save_settings
 from .demo import demo_mapping, demo_orders
 from .domain import READY_STATUSES, build_draft, country, dec, package_id, remote_invoice_present
 from .mapping import load_mapping, load_shared_mapping, shared_rows, write_shared_mapping
-from .service import Service
+from .service import Service, issue_batch
 from .store import Store, REISSUABLE
 from .reports import sales_report
+from .catalog import Catalog
 
 
 STATES = {"issuing": "Se emite", "issued": "Emisă în FGO", "uploaded": "Încărcată în Trendyol", "uncertain": "Verifică în FGO", "rejected": "Emitere respinsă", "uploading": "Se încarcă", "upload_failed": "Încărcare nereușită", "upload_uncertain": "Verifică încărcarea"}
@@ -48,6 +49,7 @@ class App(tk.Tk):
         self.rowconfigure(1, weight=1)
         self.data_dir = data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.catalog = Catalog(self.data_dir / "catalog.sqlite3")
         self.settings_path = data_dir / "settings.json"
         self.busy = False
         self.jobs = queue.Queue()
@@ -117,16 +119,18 @@ class App(tk.Tk):
             if not self.store.orders():
                 self.store.put_orders(demo_orders())
         else:
-            self.mapping = {}
+            self.mapping = self.catalog.mappings(self.settings.scope())
             if self.settings.unified_mapping_path or self.settings.mapping_path:
                 try:
-                    self.mapping = load_shared_mapping(self.settings.unified_mapping_path)["trendyol"] if self.settings.unified_mapping_path else load_mapping(self.settings.mapping_path)
+                    imported = load_shared_mapping(self.settings.unified_mapping_path)["trendyol"] if self.settings.unified_mapping_path else load_mapping(self.settings.mapping_path)
+                    self.mapping = self.catalog.merge_mappings(self.settings.scope(), imported)
                 except Exception as exc:
-                    self.load_error = f"Maparea nu a fost încărcată: {exc}"
+                    if not self.mapping:self.load_error = f"Maparea nu a fost încărcată: {exc}"
+            self.mapping = self.catalog.hydrate(self.settings.fgo_scope(), self.mapping)
             # Migrate an existing EAN → FGO map without altering the original file.
             if self.mapping and not self.settings.unified_mapping_path and not self.settings.emag_mapping_path:
                 target = self.store.path.parent / "mapare_comuna.xlsx"
-                if not target.exists() and all(p.fgo_code and p.barcode.isascii() and p.barcode.isdigit() and 6 <= len(p.barcode) <= 14 for p in self.mapping.values()):
+                if not target.exists() and all(p.fgo_code and p.barcode.isprintable() and 1 <= len(p.barcode) <= 128 for p in self.mapping.values()):
                     try:
                         from dataclasses import replace
                         write_shared_mapping(target, shared_rows(self.mapping, {}))
@@ -139,7 +143,7 @@ class App(tk.Tk):
 
     def service(self):
         others = (self.emag_tab.store,) if hasattr(self, "emag_tab") else ()
-        return Service(self.settings, self.store, dict(self.mapping), other_stores=others)
+        return Service(self.settings, self.store, dict(self.mapping), other_stores=others, catalog=self.catalog)
 
     def styles(self):
         style = ttk.Style(self)
@@ -319,23 +323,27 @@ class App(tk.Tk):
 
     def make_mapping(self):
         ttk.Label(self.mapping_tab,text="Mapare comună Trendyol + eMAG",style="Section.TLabel").pack(anchor="w")
-        ttk.Label(self.mapping_tab,text="Un singur Excel: cod_fgo, ean_trendyol, ean_emag — toate ca TEXT. Completează EAN-ul fiecărei platforme; poți lăsa una dintre platforme goală.",wraplength=1080,style="Sub.TLabel").pack(anchor="w",pady=(5,14))
+        ttk.Label(self.mapping_tab,text="Excel: cod_fgo, ean_trendyol, ean_emag — toate ca TEXT. Trendyol acceptă și coduri alfanumerice. Importul adaugă sau actualizează asocieri; rândurile existente se păstrează.",wraplength=1080,style="Sub.TLabel").pack(anchor="w",pady=(5,14))
         bar=ttk.Frame(self.mapping_tab);bar.pack(fill="x",pady=(0,14))
         ttk.Button(bar,text="Importă Excel comun",command=self.import_mapping).pack(side="left")
         ttk.Button(bar,text="Exportă Excel comun",command=self.save_template).pack(side="left",padx=8)
-        self.articles_button=ttk.Button(bar,text="Preia articolele din FGO",command=self.fetch_articles)
+        self.articles_button=ttk.Button(bar,text="Preia doar articolele noi",command=self.fetch_articles)
         self.articles_button.pack(side="left")
         self.mapping_label=ttk.Label(bar,style="Sub.TLabel");self.mapping_label.pack(side="left",padx=12)
+        extra=ttk.Frame(self.mapping_tab);extra.pack(fill="x",pady=(0,10))
+        self.refresh_articles_button=ttk.Button(extra,text="Reîmprospătează din FGO",command=lambda:self.fetch_articles(force=True))
+        self.refresh_articles_button.pack(side="left")
+        ttk.Label(extra,text="Denumirea, UM și TVA rămân salvate local. Folosește reîmprospătarea după modificări în FGO.",style="Sub.TLabel").pack(side="left",padx=12)
         self.mapping_tree=self.make_tree(self.mapping_tab,[("platform","Platformă",100),("ean","EAN",180),("fgo","Cod articol FGO",160),("name","Denumire FGO",400),("unit","UM",70),("vat","TVA %",80)])
         ttk.Label(self.mapping_tab,text="eMAG: dacă EAN-ul nu apare în comandă, aplicația îl citește din oferta produsului prin API. Un EAN poate indica un singur articol FGO pe fiecare platformă. Mai multe EAN-uri pot indica același articol FGO.",wraplength=1080,foreground=MUTED).pack(anchor="w",pady=(12,0))
 
-    def fetch_articles(self):
+    def fetch_articles(self, force=False):
         if self.busy:return
         from dataclasses import replace
         combined={}
         for prefix,mapping in [("T",self.mapping),("E",self.emag_tab.service().mapping)]:
             for ean,p in mapping.items():combined[prefix+":"+ean]=replace(p,barcode=prefix+":"+ean)
-        service=Service(self.settings,self.store,combined)
+        service=Service(self.settings,self.store,combined,catalog=self.catalog)
         def done(errors):
             maps={"T":{},"E":{}}
             for key,p in service.mapping.items():
@@ -343,7 +351,7 @@ class App(tk.Tk):
             self.mapping=maps["T"];self.emag_tab.mapping=maps["E"]
             self.refresh()
             if errors:messagebox.showerror("Articole FGO","\n".join(errors),parent=self)
-        self.run_job("Preiau articolele comune din FGO…",lambda progress:service.resolve_articles(progress=progress),done)
+        self.run_job("Reîmprospătez articolele din FGO…" if force else "Preiau doar articolele noi din FGO…",lambda progress:service.resolve_articles(progress=progress,force=force),done)
 
     def make_settings(self):
         ttk.Label(self.settings_tab, text="Conectează conturile și configurează facturarea", style="Section.TLabel").pack(anchor="w", pady=(0, 10))
@@ -535,7 +543,7 @@ class App(tk.Tk):
             return
         self.busy = True
         self.status_text.set(title)
-        for button in (self.save_button, self.articles_button):
+        for button in (self.save_button, self.articles_button, self.refresh_articles_button):
             button.configure(state="disabled")
         def runner():
             try:
@@ -553,7 +561,7 @@ class App(tk.Tk):
                     self.status_text.set(data)
                     continue
                 self.busy = False
-                for button in (self.save_button, self.articles_button):
+                for button in (self.save_button, self.articles_button, self.refresh_articles_button):
                     button.configure(state="normal")
                 self.refresh()
                 self.status_text.set("Operațiune încheiată. Rezultatele sunt păstrate în Istoric.")
@@ -641,15 +649,10 @@ class App(tk.Tk):
         services={d.package_id:self.service_for_pid(d.package_id) for d in drafts}
         def confirmed(approved):
             def work(progress):
-                count=0;failures=[]
-                for d in approved:
-                    progress(f"Emit factura pentru {d.package_id}…")
-                    try:services[d.package_id].issue(d);count+=1
-                    except Exception as exc:failures.append(f"{d.package_id}: {exc}");break
-                return count,failures,len(approved)-count-len(failures)
+                return issue_batch(approved,services,progress)
             def done(result):
-                count,failed,remaining=result
-                messagebox.showinfo("Facturare",f"{count} facturi procesate. {remaining} comenzi neprocesate."+("\n\n"+"\n".join(failed) if failed else "\nÎncarcă facturile din tabul platformei respective."),parent=self)
+                count,failed=result
+                messagebox.showinfo("Facturare",f"{count} facturi procesate. {len(failed)} comenzi cu erori / de verificat. Toate comenzile selectate au fost încercate."+("\n\n"+"\n".join(failed) if failed else "\nÎncarcă facturile din tabul platformei respective."),parent=self)
             self.run_job("Emit facturile selectate…",work,done)
         self.preview_dialog(drafts,errors,confirmed)
 
@@ -659,16 +662,30 @@ class App(tk.Tk):
         path=filedialog.askopenfilename(title="Mapare comună Trendyol + eMAG",filetypes=[("Excel","*.xlsx")],parent=self)
         if not path:return
         try:
-            products=load_shared_mapping(path)
-            target=self.data_dir/"profiles"/self.settings.scope()/"mapare_comuna.xlsx"
-            if Path(path).resolve()!=target.resolve():shutil.copy2(path,target)
-            updated=Settings(**{**asdict(self.settings),"unified_mapping_path":str(target)})
-            save_settings(self.settings_path,updated);self.settings=updated
-            self.fields["unified_mapping_path"].set(str(target))
-            self.mapping=products["trendyol"]
-            self.emag_tab.profile=None;self.emag_tab.open_profile();self.emag_tab.mapping=products["emag"]
+            self.apply_mapping_import(path)
             self.refresh();self.fetch_articles()
         except Exception as exc:messagebox.showerror("Mapare comună",str(exc),parent=self)
+
+    def apply_mapping_import(self, path):
+        imported=load_shared_mapping(path)
+        trendyol={**self.catalog.mappings(self.settings.scope()),**self.mapping,**imported["trendyol"]}
+        emag_scope=self.settings.emag_scope()+":ean"
+        existing_emag=self.emag_tab.mapping if self.settings.unified_mapping_path else {}
+        emag={**self.catalog.mappings(emag_scope),**existing_emag,**imported["emag"]}
+        target=self.data_dir/"profiles"/self.settings.scope()/"mapare_comuna.xlsx"
+        target.parent.mkdir(parents=True,exist_ok=True)
+        temporary=target.with_suffix(".tmp.xlsx")
+        write_shared_mapping(temporary,shared_rows(trendyol,emag))
+        load_shared_mapping(temporary)
+        if target.exists():shutil.copy2(target,target.with_suffix(".backup.xlsx"))
+        os.replace(temporary,target)
+        updated=Settings(**{**asdict(self.settings),"unified_mapping_path":str(target)})
+        save_settings(self.settings_path,updated);self.settings=updated
+        self.fields["unified_mapping_path"].set(str(target))
+        self.catalog.merge_mappings(self.settings.scope(),trendyol)
+        self.catalog.merge_mappings(emag_scope,emag)
+        self.mapping=self.catalog.hydrate(self.settings.fgo_scope(),trendyol) if self.settings.mode!="demo" else trendyol
+        self.emag_tab.profile=None;self.emag_tab.open_profile()
 
     def save_template(self):
         if self.busy:return

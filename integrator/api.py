@@ -192,12 +192,13 @@ class TrendyolAPI:
 
 
 class FgoAPI:
-    def __init__(self, settings, transport=None):
+    def __init__(self, settings, transport=None, catalog=None):
         settings.require_credentials("fgo")
         self.settings = settings
         self.transport = transport or Transport((settings.fgo_key,))
         self.base = "https://api.fgo.ro/v1" if settings.mode == "production" else "https://api-testuat.fgo.ro/v1"
         self.articles = {}
+        self.catalog = catalog
 
     def auth(self, suffix):
         return {"CodUnic": self.settings.cui, "Hash": hashlib.sha1((self.settings.cui+self.settings.fgo_key+suffix).encode("utf-8")).hexdigest().upper(), "PlatformaUrl": self.settings.platform_url}
@@ -228,6 +229,11 @@ class FgoAPI:
         return self._invoice("/factura/emitere", invoice_wire_payload(payload), payload["Client"]["Denumire"])
 
     def get_article(self, code):
+        if self.catalog:
+            cached = self.catalog.article(self.settings.fgo_scope(), code)
+            if cached is not None:
+                self.articles[code] = cached
+                return cached
         if code not in self.articles:
             _, response = self.transport.call("POST", self.base+"/articol/get", body={**self.auth(""), "CodArticol": code}, interval=5.1, read_only=True)
             result = response.get("Result") if isinstance(response, dict) else None
@@ -250,6 +256,8 @@ class FgoAPI:
             if vat not in {Decimal("21"), Decimal("11")}:
                 raise ValueError(f"Articolul FGO {code} are o cotă TVA neacceptată în regimul configurat. Verifică articolul în FGO.")
             self.articles[code] = {"name": name, "unit": unit, "vat": Decimal(int(vat))}
+            if self.catalog:
+                self.catalog.put(self.settings.fgo_scope(), "fgo", code, self.articles[code])
         return self.articles[code]
 
     def validate_articles(self, content):

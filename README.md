@@ -21,6 +21,8 @@ Instrucțiuni pentru fiecare tab: [GHID.md](GHID.md).
 - **De facturat** reunește comenzile eligibile din ambele platforme, cu o coloană Platformă și facturarea lotului selectat.
 - eMAG RO/BG/HU: preluare comenzi finalizate, livrate de vânzător; emitere și atașare facturi.
 - Un singur Excel: `cod_fgo`, `ean_trendyol`, `ean_emag`, toate ca TEXT. EAN-ul eMAG este citit din oferta produsului dacă lipsește din comandă.
+- Import cumulativ: asocierile omise dintr-un Excel nou rămân salvate. Codurile barcode alfanumerice Trendyol sunt acceptate.
+- Catalog local persistent: denumirea, UM, TVA și EAN-urile ofertelor deja citite sunt reutilizate după redeschidere. Butonul **Reîmprospătează din FGO** recitește articolele după modificări în FGO. Verificările comenzilor și facturilor rămân active.
 - Rapoarte: vânzări pe țări și top 5 produse după valoare, separat pe monede, cu filtre de perioadă și marketplace.
 - Previzualizare și confirmare explicită înaintea emiterii. Încărcarea facturii este un pas separat.
 

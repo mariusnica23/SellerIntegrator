@@ -9,6 +9,7 @@ from .domain import package_id
 from .emag import EmagService, invoice_order
 from .mapping import load_mapping, load_shared_mapping
 from .store import Store, REISSUABLE
+from .service import issue_batch
 
 
 class MarketplaceTab(ttk.Frame):
@@ -80,14 +81,24 @@ class MarketplaceTab(ttk.Frame):
         self.profile=profile
         self.store=Store(self.app.data_dir / "profiles" / profile[0] / "history.sqlite3")
         self.store.recover()
-        self.mapping={};self.load_error=""
+        mapping_scope = self.mapping_scope()
+        self.mapping=self.app.catalog.mappings(mapping_scope);self.load_error=""
         if profile[1]:
-            try: self.mapping=load_shared_mapping(profile[1])["emag"] if settings.unified_mapping_path else load_mapping(profile[1],identifier="product_id")
-            except Exception as exc: self.load_error=f"Maparea eMAG nu a fost încărcată: {exc}"
+            try:
+                imported=load_shared_mapping(profile[1])["emag"] if settings.unified_mapping_path else load_mapping(profile[1],identifier="product_id")
+                self.mapping=self.app.catalog.merge_mappings(mapping_scope,imported)
+            except Exception as exc:
+                if not self.mapping:self.load_error=f"Maparea eMAG nu a fost încărcată: {exc}"
+        if settings.mode != "demo":
+            self.mapping=self.app.catalog.hydrate(settings.fgo_scope(),self.mapping)
+
+    def mapping_scope(self):
+        settings=self.app.settings
+        return settings.emag_scope() + (":ean" if settings.unified_mapping_path else ":legacy")
 
     def service(self):
         if self.provider=="trendyol":return self.app.service()
-        return EmagService(self.app.settings,self.store,dict(self.mapping),other_stores=(self.app.store,))
+        return EmagService(self.app.settings,self.store,dict(self.mapping),other_stores=(self.app.store,),catalog=self.app.catalog)
 
     def selected(self, history=False):
         ids=list((self.history if history else self.tree).selection())
@@ -148,12 +159,8 @@ class MarketplaceTab(ttk.Frame):
         service=self.service();drafts,errors=service.prepare(ids)
         def confirmed(approved):
             def work(progress):
-                count=0;failures=[]
-                for d in approved:
-                    progress(f"Emit factura {self.label} {d.order_number}…")
-                    try:service.issue(d);count+=1
-                    except Exception as exc:failures.append(str(exc).replace("Trendyol",self.label));break
-                return count,failures
+                count,failures=issue_batch(approved,{d.package_id:service for d in approved},progress)
+                return count,[e.replace("Trendyol",self.label) for e in failures]
             self.app.run_job("Emit facturile "+self.label+"…",work,self.result)
         self.app.preview_dialog(drafts,[e.replace("Trendyol",self.label) for e in errors],confirmed if emit else None)
 

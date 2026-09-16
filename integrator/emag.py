@@ -124,10 +124,16 @@ def invoice_order(raw, mapping, settings):
 
 
 class EmagAPI:
-    def __init__(self, settings, transport=None):
+    def __init__(self, settings, transport=None, catalog=None):
         self.settings = settings
         self.transport = transport or Transport([getattr(settings,f"emag_password_{m.lower()}") for m in BASES])
         self.ean_cache = {}
+        self.catalog = catalog
+
+    def ean_scope(self, market):
+        import hashlib
+        user = getattr(self.settings, f"emag_user_{market.lower()}").strip().casefold()
+        return self.settings.emag_scope() + ":" + market + ":" + hashlib.sha256(user.encode()).hexdigest()[:16]
 
     def enrich_eans(self,order,market,refresh=False):
         if not self.settings.unified_mapping_path:return order
@@ -136,9 +142,15 @@ class EmagAPI:
         order["_offer_eans"] = {}
         for product in order.get("products",[]):
             if product.get("status")==0:continue
-            if product.get("ean"):
-                ean_values(product["ean"]);continue
             code=product.get("product_id");key=(market,str(code))
+            if product.get("ean"):
+                eans = ean_values(product["ean"])
+                self.ean_cache[key] = eans
+                if self.catalog:self.catalog.put(self.ean_scope(market), "emag_ean", str(code), eans)
+                continue
+            if key not in self.ean_cache and self.catalog and not refresh:
+                cached = self.catalog.get(self.ean_scope(market), "emag_ean", str(code))
+                if cached:self.ean_cache[key] = ean_values(cached)
             if key not in self.ean_cache or refresh:
                 rows=self.call(market,"/product_offer/read",{"id":int(code),"itemsPerPage":100,"currentPage":1}).get("results")
                 matches=[p for p in rows if str(p.get("id"))==str(code)] if isinstance(rows,list) else []
@@ -146,6 +158,7 @@ class EmagAPI:
                 eans=ean_values(matches[0].get("ean"))
                 if not eans:raise ValueError(f"eMAG {market}: produsul {code} nu are EAN returnat de API.")
                 self.ean_cache[key]=eans
+                if self.catalog:self.catalog.put(self.ean_scope(market), "emag_ean", str(code), eans)
             order["_offer_eans"][str(code)]=list(self.ean_cache[key])
         return order
 
@@ -191,7 +204,7 @@ class EmagAPI:
         if len(rows)!=1: raise ApiError("Comanda nu mai poate fi identificată univoc în eMAG.")
         attachments=self.call(market,"/order/attachments/read",{"order_id":order_id,"order_type":3}).get("results")
         if not isinstance(attachments,list): raise ApiError("eMAG: atașamentele nu au putut fi verificate.")
-        order=self.enrich_eans(rows[0],market,refresh=True)
+        order=self.enrich_eans(rows[0],market)
         return envelope(order,market,attachments)
 
     def upload(self,pid,market,url):
@@ -199,10 +212,12 @@ class EmagAPI:
 
 
 class EmagService(Service):
-    def __init__(self,settings,store,mapping,emag=None,fgo=None,other_stores=()):
-        super().__init__(settings,store,mapping,trendyol=emag or EmagAPI(settings),fgo=fgo,other_stores=other_stores)
+    def __init__(self,settings,store,mapping,emag=None,fgo=None,other_stores=(),catalog=None):
+        super().__init__(settings,store,mapping,trendyol=emag or EmagAPI(settings,catalog=catalog),fgo=fgo,other_stores=other_stores,catalog=catalog)
         if settings.emag_shipping_code and ("__transport__" not in self.mapping or self.mapping["__transport__"].fgo_code != settings.emag_shipping_code):
             self.mapping["__transport__"] = Product("__transport__","",fgo_code=settings.emag_shipping_code)
+        if catalog and settings.mode != "demo":
+            self.mapping = catalog.hydrate(settings.fgo_scope(), self.mapping)
 
     def sync(self,start,end,progress=lambda _:None):
         count,errors=0,[]

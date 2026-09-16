@@ -70,6 +70,9 @@ class Settings:
         identity = self.cui
         return self.mode + "-emag-" + hashlib.sha256(identity.encode()).hexdigest()[:16]
 
+    def fgo_scope(self):
+        return self.mode + "-fgo-" + hashlib.sha256(self.cui.strip().upper().removeprefix("RO").encode()).hexdigest()[:16]
+
     def require_credentials(self, provider):
         self.validate()
         if self.mode == "demo":
