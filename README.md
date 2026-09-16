@@ -17,7 +17,10 @@ Instrucțiuni pentru fiecare tab: [GHID.md](GHID.md).
 - Trendyol RO/BG/GR: selectarea coletelor Shipped/Delivered, verificarea sumei și emiterea FGO.
 - Colete split: o factură per pachet, cu rezervarea bucăților individuale; același număr de comandă poate avea mai multe facturi.
 - Actualizare: verifică facturile FGO asociate local și prezența lor în marketplace. Facturile șterse pot fi refăcute numai după confirmarea lipsei lor în ambele sisteme. Erorile de rețea nu deblochează emiterea.
-- eMAG RO/BG/HU: preluare comenzi finalizate, livrate de vânzător; emitere și atașare facturi. Mapare `product_id` → `cod_fgo`.
+- Taburi **Trendyol** și **eMAG** cu aceeași structură: comenzi, căutare, previzualizare, facturare, încărcare și istoric.
+- **De facturat** reunește comenzile eligibile din ambele platforme, cu o coloană Platformă și facturarea lotului selectat.
+- eMAG RO/BG/HU: preluare comenzi finalizate, livrate de vânzător; emitere și atașare facturi.
+- Un singur Excel: `cod_fgo`, `ean_trendyol`, `ean_emag`, toate ca TEXT. EAN-ul eMAG este citit din oferta produsului dacă lipsește din comandă.
 - Rapoarte: vânzări pe țări și top 5 produse după valoare, separat pe monede, cu filtre de perioadă și marketplace.
 - Previzualizare și confirmare explicită înaintea emiterii. Încărcarea facturii este un pas separat.
 
@@ -26,6 +29,8 @@ Instrucțiuni pentru fiecare tab: [GHID.md](GHID.md).
 Regimul implementat: firmă înregistrată normal în scopuri de TVA în România, stabilită numai în România, expedieri din România către persoane fizice, fără opțiune OSS / taxare la destinație și sub plafonul UE aplicabil. Articole FGO cu TVA 21% sau 11%. Regimul trebuie verificat pentru fiecare firmă.
 
 Nu include OSS, B2B, FBE, SGR, storno automat, retururi parțiale automate ori reconcilierea recipiselor ANAF. Rapoartele reprezintă comenzile sincronizate, nu contabilitatea completă. Seriile, cursurile și soldurile externe se configurează de operator.
+
+Rapoartele complete din FGO prin API nu sunt încă disponibile în aplicație: documentația API publică nu descrie listarea tuturor facturilor pe perioadă. Accesul la interfața financiară FGO necesită autorizare OAuth și documentarea datelor disponibile pentru această aplicație. Cererea pregătită pentru furnizor: [ACCES_RAPOARTE_FGO.md](ACCES_RAPOARTE_FGO.md).
 
 Opțiunea **EUR direct în FGO** trimite sumele în EUR fără curs și fără monitorizarea plafonului pentru acele facturi. RON rămâne RON; HUF necesită curs și un istoric fiscal reconciliat. Plafonul monitorizat cumulează facturile din profilurile active Trendyol și eMAG.
 

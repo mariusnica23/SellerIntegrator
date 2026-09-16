@@ -15,6 +15,77 @@ class Product:
     fgo_verified: bool = False
 
 
+def load_shared_mapping(path):
+    """Three text columns, independent EAN namespace per marketplace."""
+    from openpyxl import load_workbook
+    if Path(path).suffix.lower() != ".xlsx":
+        raise ValueError("Maparea comună trebuie să fie un fișier .xlsx.")
+    book=load_workbook(path,read_only=True,data_only=False,keep_links=False)
+    try:
+        sheet=book["Mapare"] if "Mapare" in book.sheetnames else book.worksheets[0]
+        rows=sheet.iter_rows()
+        headers=[str(c.value or "").strip().lower() for c in next(rows,[])]
+        required=("cod_fgo","ean_trendyol","ean_emag")
+        if any(headers.count(h)!=1 for h in required):
+            raise ValueError("Excelul comun trebuie să conțină o singură dată coloanele cod_fgo, ean_trendyol, ean_emag.")
+        result={"trendyol":{},"emag":{}}
+        for number,cells in enumerate(rows,2):
+            if number>100001:raise ValueError("Maparea depășește 100.000 de rânduri.")
+            values={}
+            for header in required:
+                index=headers.index(header);cell=cells[index] if index<len(cells) else None
+                value=cell.value if cell else None
+                if value is None or value=="":values[header]="";continue
+                if cell.data_type=="f" or not isinstance(value,str):
+                    raise ValueError(f"Rândul {number}: {header} trebuie să fie TEXT, fără formule.")
+                values[header]=value.strip()
+            if not any(values.values()):continue
+            code=values["cod_fgo"]
+            if not code or len(code)>128 or not (values["ean_trendyol"] or values["ean_emag"]):
+                raise ValueError(f"Rândul {number}: completează cod_fgo și cel puțin un EAN.")
+            for platform in result:
+                ean=values[f"ean_{platform}"]
+                if not ean:continue
+                if not ean.isascii() or not ean.isdigit() or not 6<=len(ean)<=14:
+                    raise ValueError(f"Rândul {number}: EAN {platform} invalid; folosește 6–14 cifre ca TEXT.")
+                if ean in result[platform]:
+                    raise ValueError(f"Rândul {number}: EAN duplicat pentru {platform}: {ean}.")
+                result[platform][ean]=Product(ean,"",unit="",fgo_code=code)
+        if not any(result.values()):raise ValueError("Excelul comun nu conține asocieri.")
+        return result
+    finally:book.close()
+
+
+def shared_rows(trendyol,emag):
+    """Export logical associations, pairing rows only by the common FGO article."""
+    from itertools import zip_longest
+    codes=sorted({p.fgo_code for p in list(trendyol.values())+list(emag.values()) if p.fgo_code and p.barcode!="__transport__"})
+    rows=[]
+    for code in codes:
+        t=sorted(p.barcode for p in trendyol.values() if p.fgo_code==code)
+        e=sorted(p.barcode for p in emag.values() if p.fgo_code==code and p.barcode!="__transport__")
+        rows.extend((code,a,b) for a,b in zip_longest(t,e,fillvalue=""))
+    return rows
+
+
+def write_shared_mapping(path, rows):
+    """App runtime export. Identifiers stay literal strings, never Excel formulas."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    book=Workbook();sheet=book.active;sheet.title="Mapare"
+    sheet.append(["cod_fgo","ean_trendyol","ean_emag"])
+    for row in rows:sheet.append(list(row))
+    for row in sheet:
+        for cell in row:
+            cell.number_format="@";cell.data_type="s"
+            cell.font=Font(name="Calibri",size=11,color="123D33" if cell.row==1 else "18293E",bold=cell.row==1)
+            cell.alignment=Alignment(horizontal="left")
+            if cell.row==1:cell.fill=PatternFill("solid",fgColor="DAEAE6")
+    for col in ("A","B","C"):sheet.column_dimensions[col].width=26
+    sheet.row_dimensions[1].height=28;sheet.freeze_panes="A2";sheet.auto_filter.ref=sheet.dimensions
+    book.save(path)
+
+
 def load_mapping(path: str | Path, identifier="barcode") -> dict[str, Product]:
     from openpyxl import load_workbook
     if Path(path).suffix.lower() != ".xlsx":

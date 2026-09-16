@@ -18,6 +18,13 @@ def country_code(value):
     return {"romania":"RO","românia":"RO","bulgaria":"BG","българия":"BG","hungary":"HU","ungaria":"HU","magyarország":"HU"}.get(text,text.upper())
 
 
+def ean_values(value):
+    if isinstance(value,str):value=[value]
+    if not isinstance(value,list) or not value or any(not isinstance(x,str) or not x.strip().isascii() or not x.strip().isdigit() or not 6<=len(x.strip())<=14 for x in value):
+        raise ValueError("eMAG: EAN lipsă sau invalid în datele produsului; completează codurile EAN în eMAG.")
+    return list(dict.fromkeys(x.strip() for x in value))
+
+
 def envelope(order, market, attachments=None):
     customer = order.get("customer") or {}
     bill = {"fullName":customer.get("billing_name") or customer.get("name"),"countryCode":country_code(customer.get("billing_country")),"city":customer.get("billing_city"),"countyName":customer.get("billing_suburb"),"fullAddress":customer.get("billing_street")}
@@ -26,7 +33,9 @@ def envelope(order, market, attachments=None):
     currency = next((p.get("currency") for p in order.get("products",[]) if p.get("currency")), DEFAULT_CURRENCY[market])
     raw = {"_provider":"emag","_market":market,"_emag":order,"_ordered_on":str(order.get("date") or "")[:10],"orderNumber":str(order["id"]),"shipmentPackageId":order["id"],"invoiceAddress":bill,"shipmentAddress":{"countryCode":country_code(customer.get("shipping_country"))},"commercial":customer.get("legal_entity") != 0,"micro":False,"currencyCode":currency,"shipmentPackageStatus":STATUSES.get(order.get("status"),"Unknown"),"invoiceStatus":"Invoiced" if invoices else "NotInvoiced","invoiceLink":invoices[0].get("url","") if invoices else "","paymentMethod":{1:"Ramburs",2:"Transfer bancar",3:"Card"}.get(order.get("payment_mode_id"),""),"lines":[]}
     for product in order.get("products",[]):
-        raw["lines"].append({"barcode":str(product.get("product_id") or ""),"productName":product.get("name", ""),"quantity":product.get("quantity"),"lineId":f"emag-{market}-{order['id']}-{product.get('id')}","orderLineItemStatusName":raw["shipmentPackageStatus"]})
+        eans = product.get("ean") or order.get("_offer_eans", {}).get(str(product.get("product_id")), [])
+        barcode = eans if isinstance(eans, str) else ", ".join(str(e) for e in eans) if isinstance(eans, list) else ""
+        raw["lines"].append({"barcode":barcode,"productName":product.get("name", ""),"quantity":product.get("quantity"),"lineId":f"emag-{market}-{order['id']}-{product.get('id')}","orderLineItemStatusName":raw["shipmentPackageStatus"]})
     return raw
 
 
@@ -45,7 +54,17 @@ def invoice_order(raw, mapping, settings):
         if product.get("status") != 1 or product.get("recycle_warranties"):
             raise ValueError("eMAG: stare produs necunoscută sau garanție SGR; verifică separat.")
         code = str(product.get("product_id") or "")
-        article = mapping.get(f"{market}:{code}") or mapping.get(code)
+        if settings.unified_mapping_path:
+            value = product.get("ean") or order.get("_offer_eans", {}).get(code)
+            if not value and order.get("_ean_error"):
+                raise ValueError(order["_ean_error"])
+            eans=ean_values(value)
+            matches=[mapping[e] for e in eans if e in mapping]
+            if not matches:raise ValueError(f"eMAG: niciun EAN al produsului {code} nu este mapat în Excelul comun.")
+            if len({a.fgo_code for a in matches})!=1:raise ValueError(f"eMAG: EAN-urile produsului {code} indică articole FGO diferite.")
+            article=matches[0]
+        else:
+            article = mapping.get(f"{market}:{code}") or mapping.get(code)
         if not article:
             raise ValueError(f"eMAG {market}: product_id {code} nemapat în Excel.")
         if article.fgo_code and not article.fgo_verified and settings.mode != "demo":
@@ -108,6 +127,27 @@ class EmagAPI:
     def __init__(self, settings, transport=None):
         self.settings = settings
         self.transport = transport or Transport([getattr(settings,f"emag_password_{m.lower()}") for m in BASES])
+        self.ean_cache = {}
+
+    def enrich_eans(self,order,market,refresh=False):
+        if not self.settings.unified_mapping_path:return order
+        order.pop("_ean_error", None)
+        # Enrichment is metadata: do not mutate products or historical fingerprints.
+        order["_offer_eans"] = {}
+        for product in order.get("products",[]):
+            if product.get("status")==0:continue
+            if product.get("ean"):
+                ean_values(product["ean"]);continue
+            code=product.get("product_id");key=(market,str(code))
+            if key not in self.ean_cache or refresh:
+                rows=self.call(market,"/product_offer/read",{"id":int(code),"itemsPerPage":100,"currentPage":1}).get("results")
+                matches=[p for p in rows if str(p.get("id"))==str(code)] if isinstance(rows,list) else []
+                if len(matches)!=1:raise ValueError(f"eMAG {market}: produsul {code} nu poate fi identificat pentru citirea EAN.")
+                eans=ean_values(matches[0].get("ean"))
+                if not eans:raise ValueError(f"eMAG {market}: produsul {code} nu are EAN returnat de API.")
+                self.ean_cache[key]=eans
+            order["_offer_eans"][str(code)]=list(self.ean_cache[key])
+        return order
 
     def call(self, market, path, payload, read_only=True):
         if self.settings.mode != "production":
@@ -135,6 +175,9 @@ class EmagAPI:
                 if identity and identity in pages_seen: raise ApiError("eMAG: pagina de comenzi se repetă; sincronizarea a fost oprită.")
                 pages_seen.add(identity)
                 for order in rows:
+                    # A missing EAN blocks only that invoice; keep the order visible for correction.
+                    try:self.enrich_eans(order,market)
+                    except (ApiError,ValueError,TypeError) as exc:order["_ean_error"]=str(exc)
                     raw=envelope(order,market); result[package_id(raw)]=raw
                 if len(rows)<100: break
             else: raise ApiError("eMAG: prea multe pagini; restrânge perioada.")
@@ -148,7 +191,8 @@ class EmagAPI:
         if len(rows)!=1: raise ApiError("Comanda nu mai poate fi identificată univoc în eMAG.")
         attachments=self.call(market,"/order/attachments/read",{"order_id":order_id,"order_type":3}).get("results")
         if not isinstance(attachments,list): raise ApiError("eMAG: atașamentele nu au putut fi verificate.")
-        return envelope(rows[0],market,attachments)
+        order=self.enrich_eans(rows[0],market,refresh=True)
+        return envelope(order,market,attachments)
 
     def upload(self,pid,market,url):
         self.call(market,"/order/attachments/save",{"data":[{"order_id":int(pid.rsplit(":",1)[1]),"order_type":3,"type":1,"name":"Factura FGO.pdf","url":valid_invoice_url(url)}]},read_only=False)

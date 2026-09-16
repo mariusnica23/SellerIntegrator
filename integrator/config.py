@@ -25,6 +25,7 @@ class Settings:
     series_gr: str = ""
     platform_url: str = ""
     mapping_path: str = ""
+    unified_mapping_path: str = ""
     markets: str = "RO,BG,GR"
     fiscal_confirmed: bool = True  # Explicitly confirmed by the project owner.
     fiscal_year: str = str(date.today().year)

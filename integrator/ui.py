@@ -17,8 +17,8 @@ import webbrowser
 
 from .config import Settings, load_settings, save_settings
 from .demo import demo_mapping, demo_orders
-from .domain import READY_STATUSES, build_draft, country, dec, package_id
-from .mapping import load_mapping
+from .domain import READY_STATUSES, build_draft, country, dec, package_id, remote_invoice_present
+from .mapping import load_mapping, load_shared_mapping, shared_rows, write_shared_mapping
 from .service import Service
 from .store import Store, REISSUABLE
 from .reports import sales_report
@@ -63,7 +63,6 @@ class App(tk.Tk):
         self.header()
         self.notebook = ttk.Notebook(self)
         self.notebook.grid(row=1, column=0, sticky="nsew", padx=24, pady=(0, 10))
-        self.orders_tab = ttk.Frame(self.notebook, padding=18)
         self.pending_tab = ttk.Frame(self.notebook, padding=18)
         self.params_tab = ttk.Frame(self.notebook, padding=10)
         self.params_tab.columnconfigure(0, weight=1)
@@ -82,23 +81,22 @@ class App(tk.Tk):
         self.settings_tab = ttk.Frame(self.param_notebook, padding=18)
         self.param_notebook.add(self.mapping_tab, text="Mapare Excel")
         self.param_notebook.add(self.settings_tab, text="Date de bază & conexiuni")
-        self.history_tab = ttk.Frame(self.notebook, padding=18)
         self.reports_tab = ttk.Frame(self.notebook, padding=18)
         self.help_tab = ttk.Frame(self.notebook, padding=18)
-        for tab, label in [(self.orders_tab, "Comenzi"), (self.pending_tab, "De facturat"), (self.params_tab, "Parametrizare"), (self.history_tab, "Istoric"), (self.help_tab, "Ghid & fiscalitate")]:
+        for tab, label in [(self.pending_tab, "De facturat"), (self.params_tab, "Parametrizare"), (self.help_tab, "Ghid & fiscalitate")]:
             self.notebook.add(tab, text=label)
         self.notebook.insert(self.help_tab, self.reports_tab, text="Rapoarte")
-        self.make_orders()
         self.make_pending()
         self.make_mapping()
         self.make_settings()
-        from .emag_ui import EmagTab
-        self.emag_tab = EmagTab(self)
-        self.notebook.insert(self.params_tab, self.emag_tab, text="eMAG")
+        from .marketplace_ui import MarketplaceTab
+        self.trendyol_tab = MarketplaceTab(self,"trendyol")
+        self.emag_tab = MarketplaceTab(self,"emag")
+        self.notebook.insert(0,self.trendyol_tab,text="Trendyol")
+        self.notebook.insert(1,self.emag_tab,text="eMAG")
         for variable in self.fields.values():
             variable.trace_add("write", self.update_config_message)
         self.bind("<Control-s>", lambda _: self.save_config())
-        self.make_history()
         self.make_reports()
         self.make_help()
         self.status_text = tk.StringVar(value="Pregătit. Datele sunt salvate local pe acest calculator.")
@@ -106,7 +104,7 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.close_app)
         self.poll_id = self.after(120, self.poll)
         self.refresh()
-        self.notebook.select(self.orders_tab)
+        self.notebook.select(self.trendyol_tab)
         self.param_notebook.select(self.mapping_tab)
         if self.load_error:
             self.after(300, lambda: messagebox.showwarning("Configurare", self.load_error, parent=self))
@@ -120,11 +118,24 @@ class App(tk.Tk):
                 self.store.put_orders(demo_orders())
         else:
             self.mapping = {}
-            if self.settings.mapping_path:
+            if self.settings.unified_mapping_path or self.settings.mapping_path:
                 try:
-                    self.mapping = load_mapping(self.settings.mapping_path)
+                    self.mapping = load_shared_mapping(self.settings.unified_mapping_path)["trendyol"] if self.settings.unified_mapping_path else load_mapping(self.settings.mapping_path)
                 except Exception as exc:
                     self.load_error = f"Maparea nu a fost încărcată: {exc}"
+            # Migrate an existing EAN → FGO map without altering the original file.
+            if self.mapping and not self.settings.unified_mapping_path and not self.settings.emag_mapping_path:
+                target = self.store.path.parent / "mapare_comuna.xlsx"
+                if not target.exists() and all(p.fgo_code and p.barcode.isascii() and p.barcode.isdigit() and 6 <= len(p.barcode) <= 14 for p in self.mapping.values()):
+                    try:
+                        from dataclasses import replace
+                        write_shared_mapping(target, shared_rows(self.mapping, {}))
+                        load_shared_mapping(target)
+                        updated = replace(self.settings, unified_mapping_path=str(target))
+                        save_settings(self.settings_path, updated)
+                        self.settings = updated
+                    except Exception as exc:
+                        self.load_error = f"Maparea existentă rămâne activă; conversia la Excel comun nu a reușit: {exc}"
 
     def service(self):
         others = (self.emag_tab.store,) if hasattr(self, "emag_tab") else ()
@@ -182,66 +193,14 @@ class App(tk.Tk):
         tree.tag_configure("done", foreground=ACCENT)
         return tree
 
-    def make_orders(self):
-        cards = ttk.Frame(self.orders_tab)
-        cards.pack(fill="x", pady=(0, 14))
-        self.card_vars = []
-        for i, title in enumerate(["PACHETE ÎN ISTORIC", "PREGĂTITE PENTRU EMITERE", "DE ÎNCĂRCAT", "ÎNCĂRCATE"]):
-            card = tk.Frame(cards, bg="white", padx=18, pady=12, highlightbackground="#e1e6ed", highlightthickness=1)
-            card.grid(row=0, column=i, sticky="nsew", padx=(0, 10 if i<3 else 0))
-            cards.columnconfigure(i, weight=1)
-            value = tk.StringVar(value="0")
-            self.card_vars.append(value)
-            tk.Label(card, textvariable=value, font=("Segoe UI Semibold", 23), fg=INK, bg="white").pack(anchor="w")
-            tk.Label(card, text=title, font=("Segoe UI", 8), fg=MUTED, bg="white").pack(anchor="w")
-        self.notice = ttk.Label(self.orders_tab, foreground=MUTED, wraplength=1100)
-        self.notice.pack(anchor="w", pady=(0, 12))
-        toolbar = ttk.Frame(self.orders_tab)
-        toolbar.pack(fill="x", pady=(0, 12))
-        self.start_date = tk.StringVar(value=(date.today()-timedelta(days=6)).isoformat())
-        self.end_date = tk.StringVar(value=date.today().isoformat())
-        for label, var in [("Din", self.start_date), ("până în", self.end_date)]:
-            ttk.Label(toolbar, text=label).pack(side="left", padx=(0, 6))
-            ttk.Entry(toolbar, textvariable=var, width=11).pack(side="left", padx=(0, 10))
-        self.sync_button = ttk.Button(toolbar, text="Preia comenzi", command=self.sync)
-        self.sync_button.pack(side="left")
-        self.market_filter = tk.StringVar(value="Toate piețele")
-        combo = ttk.Combobox(toolbar, textvariable=self.market_filter, values=["Toate piețele", "RO", "BG", "GR"], state="readonly", width=14)
-        combo.pack(side="right", padx=(10, 0))
-        combo.bind("<<ComboboxSelected>>", lambda _: self.refresh())
-        self.search = tk.StringVar()
-        search_entry = ttk.Entry(toolbar, textvariable=self.search, width=24)
-        search_entry.pack(side="right", padx=(6, 0))
-        ttk.Label(toolbar, text="Caută comandă / barcode").pack(side="right")
-        self.search.trace_add("write", lambda *_: self.refresh())
-        self.order_tree = self.make_tree(self.orders_tab, [("order", "Comandă / Pachet", 220), ("market", "Țară", 70), ("client", "Client", 250), ("total", "De facturat (cu TVA)", 155), ("stage", "Status Trendyol", 115), ("state", "Factură", 195)], 9)
-        self.order_tree.bind("<<TreeviewSelect>>", self.show_selection)
-        self.order_tree.bind("<Double-1>", lambda _: self.preview_only())
-        small = ttk.Frame(self.orders_tab)
-        small.pack(fill="x", pady=(9, 4))
-        ttk.Button(small, text="Selectează pregătite", command=self.select_ready).pack(side="left")
-        ttk.Button(small, text="Previzualizare", command=self.preview_only).pack(side="left", padx=8)
-        self.selection_text = tk.StringVar(value="Selectează comenzile pe care vrei să le procesezi.")
-        ttk.Label(small, textvariable=self.selection_text, foreground=MUTED).pack(side="right")
-        self.detail = tk.Text(self.orders_tab, height=3, wrap="word", bg="#eaf0f5", fg=INK, relief="flat", padx=12, pady=10, font=("Segoe UI", 10))
-        self.detail.pack(fill="x", pady=(5, 10))
-        self.detail.configure(state="disabled")
-        actions = ttk.Frame(self.orders_tab)
-        actions.pack(fill="x")
-        self.issue_button = ttk.Button(actions, text="1   Creează facturile în FGO", style="Primary.TButton", command=self.create_invoices)
-        self.issue_button.pack(side="left")
-        self.upload_button = ttk.Button(actions, text="2   Încarcă facturile în Trendyol", style="Secondary.TButton", command=self.upload_invoices)
-        self.upload_button.pack(side="left", padx=12)
-        self.pending_button = ttk.Button(actions, text="3   Lista de facturat", style="Secondary.TButton", command=self.list_pending)
-        self.pending_button.pack(side="left")
 
     def make_pending(self):
-        ttk.Label(self.pending_tab, text="În expediere + Livrat • fără factură", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(self.pending_tab, text="De facturat • Trendyol + eMAG", style="Section.TLabel").pack(anchor="w")
         self.pending_info = ttk.Label(self.pending_tab, text="Un rând pentru fiecare produs. Folosește bara orizontală pentru toate datele.", style="Sub.TLabel")
         self.pending_info.pack(anchor="w", pady=(5, 12))
-        columns = [("select", "Selectează", 95), ("order", "Comandă", 140), ("pid", "Pachet", 110), ("state", "Status", 120), ("check", "Verificare", 310),
+        columns = [("select", "Selectează", 95), ("platform", "Platformă", 95), ("order", "Comandă", 140), ("pid", "Pachet", 160), ("state", "Status", 120), ("check", "Verificare", 310),
                    ("name", "Client facturat", 230), ("type", "Tip client", 90), ("country", "Țară", 75), ("county", "Județ", 130), ("city", "Localitate", 140), ("address", "Adresă facturare", 360),
-                   ("barcode", "Barcode", 170), ("product", "Denumire pe factură", 340), ("fgo", "Cod articol FGO", 145), ("qty", "Cantitate", 90), ("unit", "UM", 75),
+                   ("barcode", "EAN", 170), ("product", "Denumire pe factură", 340), ("fgo", "Cod articol FGO", 145), ("qty", "Cantitate", 90), ("unit", "UM", 75),
                    ("price", "Preț unitar cu TVA*", 160), ("gross", "Total produs cu TVA", 160), ("vat", "Cota TVA %", 110), ("base", "Bază produs estimată", 175), ("tax", "TVA produs estimat", 160),
                    ("currency", "Monedă", 90), ("series", "Serie FGO", 110), ("date", "Data emiterii", 125), ("sales", "Valoarea vânzărilor", 160), ("discount", "Reducere comerciant", 180), ("total", "DE FACTURAT / pachet", 195), ("payment", "Metodă plată", 160), ("notes", "Explicații factură", 420)]
         self.pending_tree = self.make_tree(self.pending_tab, columns, 15)
@@ -253,11 +212,11 @@ class App(tk.Tk):
         self.pending_tree.bind("<<TreeviewSelect>>", self.pending_selection_changed)
         bar = ttk.Frame(self.pending_tab)
         bar.pack(fill="x", pady=(12, 0))
-        ttk.Button(bar, text="Actualizează lista din Trendyol", command=self.list_pending).pack(side="left")
+        ttk.Button(bar, text="Actualizează ambele platforme", command=self.list_pending).pack(side="left")
         ttk.Button(bar, text="Selectează toate", command=lambda: self.pending_tree.selection_set(self.pending_tree.get_children())).pack(side="left", padx=8)
         ttk.Button(bar, text="Previzualizare", command=self.preview_only).pack(side="left")
         ttk.Button(bar, text="Facturează comenzi selectate", style="Primary.TButton", command=self.create_invoices).pack(side="right")
-        ttk.Label(self.pending_tab, text="Selecția unui produs include întregul pachet. Totalul pachetului se repetă pe fiecare produs și nu se însumează între rânduri. *Prețul unitar este informativ; către FGO se trimite totalul produsului cu TVA.\nComenzile cu date lipsă rămân vizibile, cu explicația problemei. Facturile emise manual în FGO, fără link în Trendyol, trebuie verificate separat înainte de emitere.", foreground=MUTED, wraplength=1100).pack(anchor="w", pady=(12, 0))
+        ttk.Label(self.pending_tab, text="Trendyol: în expediere/livrat. eMAG: finalizate, livrate de vânzător. Selecția unui produs include întregul colet/comandă.\nTotalul se repetă pe produse și nu se însumează între rânduri. *Prețul unitar este informativ. Facturile emise în afara aplicației, fără link în marketplace, trebuie verificate separat.", foreground=MUTED, wraplength=1100).pack(anchor="w", pady=(12, 0))
 
     def refresh_pending(self, raws, records):
         if not hasattr(self, "pending_tree"):
@@ -269,15 +228,22 @@ class App(tk.Tk):
         for raw in raws:
             pid = package_id(raw)
             rec = records.get(pid)
-            if raw.get("shipmentPackageStatus", raw.get("status")) not in READY_STATUSES or raw.get("invoiceLink") or (rec and rec["state"] not in REISSUABLE):
+            if raw.get("shipmentPackageStatus", raw.get("status")) not in READY_STATUSES or remote_invoice_present(raw) or (rec and rec["state"] not in REISSUABLE):
                 continue
             count += 1
             d = None
+            is_emag=raw.get("_provider")=="emag"
+            platform="eMAG" if is_emag else "Trendyol"
+            service=self.service_for_pid(pid)
+            mapping=service.mapping
             try:
-                d = build_draft(raw, self.mapping, self.settings)
+                if is_emag:
+                    from .emag import invoice_order
+                    raw,mapping=invoice_order(raw,mapping,self.settings)
+                d = service.draft(raw)
                 check = "Date valide; EUR direct în FGO, fără verificarea plafonului" if d.net_ron is None else "Date valide; plafonul se verifică la emitere"
             except ValueError as exc:
-                check = str(exc)
+                check = str(exc).replace("Trendyol",platform)
             address = raw.get("invoiceAddress") or {}
             client = d.payload["Client"] if d else {}
             currency = raw.get("currencyCode", "")
@@ -287,17 +253,19 @@ class App(tk.Tk):
                 expected = "Lipsește"
             for i, line in enumerate(raw.get("lines") or [{}]):
                 barcode = str(line.get("barcode") or "")
-                product = self.mapping.get(barcode)
+                product = mapping.get(barcode)
                 entry = d.payload["Continut"][i] if d else {}
                 gross = entry.get("PretTotal")
                 base = (gross / (1 + product.vat/100)).quantize(Decimal("0.01"), rounding="ROUND_HALF_UP") if gross is not None else None
                 unit_price = (gross / dec(line["quantity"])).quantize(Decimal("0.0001"), rounding="ROUND_HALF_UP") if gross is not None else ""
                 row_id = f"{pid}:{i}"
                 target = country(raw)
-                values = ("☐", raw.get("orderNumber", ""), pid, "Livrat" if raw.get("shipmentPackageStatus", raw.get("status")) == "Delivered" else "În expediere", check,
+                status="Finalizată" if is_emag else "Livrat" if raw.get("shipmentPackageStatus", raw.get("status")) == "Delivered" else "În expediere"
+                display_ean=product.barcode if is_emag and product else barcode
+                values = ("☐", platform, raw.get("orderNumber", ""), pid, status, check,
                           client.get("Denumire", address.get("fullName", "")), client.get("Tip", "PF" if raw.get("commercial") is False else "DE VERIFICAT"), address.get("countryCode", ""), client.get("Judet", address.get("countyName", "")), address.get("city", ""), client.get("Adresa", address.get("fullAddress", address.get("address1", ""))),
-                          barcode, (product.name or "De preluat din FGO") if product else "NEMAPAT", product.fgo_code if product else "", line.get("quantity", ""), product.unit if product else "", unit_price, str(gross) if gross is not None else "", str(product.vat) if product and (not product.fgo_code or product.fgo_verified) else "", str(base) if base is not None else "", str(gross-base) if base is not None else "",
-                          currency, d.payload["Serie"] if d else getattr(self.settings, f"series_{target.lower()}", ""), date.today().isoformat(), raw.get("packageGrossAmount", ""), raw.get("packageSellerDiscount", ""), expected, raw.get("paymentMethod", ""), d.payload["Explicatii"] if d else "")
+                          display_ean, (product.name or "De preluat din FGO") if product else "NEMAPAT", product.fgo_code if product else "", line.get("quantity", ""), product.unit if product else "", unit_price, str(gross) if gross is not None else "", str(product.vat) if product and (not product.fgo_code or product.fgo_verified) else "", str(base) if base is not None else "", str(gross-base) if base is not None else "",
+                          currency, d.payload["Serie"] if d else getattr(self.settings, f"{'emag_' if is_emag else ''}series_{target.lower()}", ""), date.today().isoformat(), raw.get("packageGrossAmount", ""), raw.get("packageSellerDiscount", ""), expected, raw.get("paymentMethod", ""), d.payload["Explicatii"] if d else "")
                 self.pending_tree.insert("", "end", iid=row_id, values=values, tags=() if d else ("blocked",))
                 self.pending_packages[row_id] = pid
                 if pid in selected:
@@ -328,37 +296,54 @@ class App(tk.Tk):
             self.pending_tree.set(row, "select", "☑" if row in full else "☐")
 
     def list_pending(self):
-        if self.busy:
-            return
+        if self.busy:return
         self.notebook.select(self.pending_tab)
-        self.sync()
+        services=[("Trendyol",self.service(),self.trendyol_tab), ("eMAG",self.emag_tab.service(),self.emag_tab)]
+        try:
+            periods=[(date.fromisoformat(tab.start.get()),date.fromisoformat(tab.end.get())) for _,_,tab in services]
+        except ValueError:
+            messagebox.showerror("Perioadă","Completează datele AAAA-LL-ZZ în fiecare tab de platformă.",parent=self);return
+        if not any(getattr(self.settings,f"emag_user_{m}") for m in ("ro","bg","hu")):services=services[:1];periods=periods[:1]
+        def work(progress):
+            total=0;errors=[]
+            for (name,service,_),(start,end) in zip(services,periods):
+                count,failed=service.sync(start,end,progress);total+=count;errors.extend(f"{name}: {e}" for e in failed)
+            return total,errors
+        def done(result):
+            self.mapping=services[0][1].mapping
+            if len(services)>1:self.emag_tab.mapping=services[1][1].mapping
+            self.refresh()
+            total,errors=result
+            messagebox.showinfo("Sincronizare",f"{total} comenzi/colete preluate."+("\n\n"+"\n".join(errors[:15]) if errors else ""),parent=self)
+        self.run_job("Actualizez comenzile din ambele platforme…",work,done)
 
     def make_mapping(self):
-        ttk.Label(self.mapping_tab, text="Barcode Trendyol → cod articol FGO", style="Section.TLabel").pack(anchor="w")
-        ttk.Label(self.mapping_tab, text="Excel .xlsx cu doar două coloane: barcode și cod_fgo, ambele ca TEXT. Denumirea, UM și TVA se preiau din FGO.", style="Sub.TLabel").pack(anchor="w", pady=(5, 14))
-        bar = ttk.Frame(self.mapping_tab)
-        bar.pack(fill="x", pady=(0, 14))
-        ttk.Button(bar, text="Importă Excel", command=self.import_mapping).pack(side="left")
-        ttk.Button(bar, text="Salvează modelul Excel", command=self.save_template).pack(side="left", padx=8)
-        self.articles_button = ttk.Button(bar, text="Preia articolele din FGO", command=self.fetch_articles)
+        ttk.Label(self.mapping_tab,text="Mapare comună Trendyol + eMAG",style="Section.TLabel").pack(anchor="w")
+        ttk.Label(self.mapping_tab,text="Un singur Excel: cod_fgo, ean_trendyol, ean_emag — toate ca TEXT. Completează EAN-ul fiecărei platforme; poți lăsa una dintre platforme goală.",wraplength=1080,style="Sub.TLabel").pack(anchor="w",pady=(5,14))
+        bar=ttk.Frame(self.mapping_tab);bar.pack(fill="x",pady=(0,14))
+        ttk.Button(bar,text="Importă Excel comun",command=self.import_mapping).pack(side="left")
+        ttk.Button(bar,text="Exportă Excel comun",command=self.save_template).pack(side="left",padx=8)
+        self.articles_button=ttk.Button(bar,text="Preia articolele din FGO",command=self.fetch_articles)
         self.articles_button.pack(side="left")
-        self.mapping_label = ttk.Label(bar, style="Sub.TLabel")
-        self.mapping_label.pack(side="left", padx=12)
-        self.mapping_tree = self.make_tree(self.mapping_tab, [("barcode", "Barcode Trendyol", 170), ("fgo", "Cod articol FGO", 150), ("name", "Denumire din FGO", 430), ("unit", "UM", 80), ("vat", "TVA %", 80)], 17)
-        ttk.Label(self.mapping_tab, text="Mai multe barcode-uri pot indica același articol FGO. Un barcode are o singură asociere. Articolele sunt citite automat la preluarea comenzilor și verificate din nou înainte de emitere. Prețul și cantitatea provin din comanda Trendyol. Formatele vechi cu denumire_factura rămân acceptate pentru rândurile fără cod_fgo.", foreground=MUTED, wraplength=1050).pack(anchor="w", pady=(12, 0))
+        self.mapping_label=ttk.Label(bar,style="Sub.TLabel");self.mapping_label.pack(side="left",padx=12)
+        self.mapping_tree=self.make_tree(self.mapping_tab,[("platform","Platformă",100),("ean","EAN",180),("fgo","Cod articol FGO",160),("name","Denumire FGO",400),("unit","UM",70),("vat","TVA %",80)])
+        ttk.Label(self.mapping_tab,text="eMAG: dacă EAN-ul nu apare în comandă, aplicația îl citește din oferta produsului prin API. Un EAN poate indica un singur articol FGO pe fiecare platformă. Mai multe EAN-uri pot indica același articol FGO.",wraplength=1080,foreground=MUTED).pack(anchor="w",pady=(12,0))
 
     def fetch_articles(self):
-        if self.busy:
-            return
-        service = self.service()
+        if self.busy:return
+        from dataclasses import replace
+        combined={}
+        for prefix,mapping in [("T",self.mapping),("E",self.emag_tab.service().mapping)]:
+            for ean,p in mapping.items():combined[prefix+":"+ean]=replace(p,barcode=prefix+":"+ean)
+        service=Service(self.settings,self.store,combined)
         def done(errors):
-            self.mapping = service.mapping
+            maps={"T":{},"E":{}}
+            for key,p in service.mapping.items():
+                prefix,ean=key.split(":",1);maps[prefix][ean]=replace(p,barcode=ean)
+            self.mapping=maps["T"];self.emag_tab.mapping=maps["E"]
             self.refresh()
-            count = sum(p.fgo_verified for p in self.mapping.values())
-            self.status_text.set(f"{count} asocieri verificate cu articole FGO.")
-            if errors:
-                messagebox.showerror("Articole FGO", "\n".join(errors[:20]), parent=self)
-        self.run_job("Preiau articolele din FGO…", lambda progress: service.resolve_articles(progress=progress), done)
+            if errors:messagebox.showerror("Articole FGO","\n".join(errors),parent=self)
+        self.run_job("Preiau articolele comune din FGO…",lambda progress:service.resolve_articles(progress=progress),done)
 
     def make_settings(self):
         ttk.Label(self.settings_tab, text="Conectează conturile și configurează facturarea", style="Section.TLabel").pack(anchor="w", pady=(0, 10))
@@ -366,6 +351,7 @@ class App(tk.Tk):
         self.connection_notebook = sub
         sub.pack(fill="both", expand=True)
         connection = ttk.Frame(sub, padding=18)
+        self.api_settings_tab = connection
         self.fiscal_tab = ttk.Frame(sub)
         sub.add(connection, text="Conexiuni API")
         sub.add(self.fiscal_tab, text="TVA & plafon UE")
@@ -438,25 +424,22 @@ class App(tk.Tk):
         entry(options,1,"emag_shipping_code","Cod articol FGO pentru transport")
         entry(options,2,"emag_shipping_tax_mode","shipping_tax din API include TVA?",options=["","cu_tva","fara_tva"])
         entry(options,3,"huf_ron","Curs aplicabil: 1 HUF = RON")
-        ttk.Label(emag,text="Transportul se facturează separat când este nenul; confirmă în contul eMAG dacă shipping_tax include TVA.\nHUF se trimite către FGO în HUF; cursul RON este folosit la verificarea plafonului comun Trendyol + eMAG.\nCompletează și data cursului / soldurile în TVA & plafon UE. Maparea eMAG se importă în tabul eMAG → Mapare articole.",foreground=MUTED,wraplength=1080).pack(anchor="w")
+        ttk.Label(emag,text="Transportul se facturează separat când este nenul; confirmă în contul eMAG dacă shipping_tax include TVA.\nHUF se trimite către FGO în HUF; cursul RON este folosit la verificarea plafonului comun Trendyol + eMAG.\nCompletează și data cursului / soldurile în TVA & plafon UE. Maparea comună se importă în Parametrizare → Mapare Excel.",foreground=MUTED,wraplength=1080).pack(anchor="w")
 
     def update_config_message(self, *_):
         changed = any(variable.get() != getattr(self.settings, name) for name, variable in self.fields.items())
         self.config_message.set("Modificări nesalvate — apasă Salvează (Ctrl+S)." if changed else "Parametrizările salvate se încarcă automat la fiecare deschidere.")
 
-    def make_history(self):
-        ttk.Label(self.history_tab, text="Fiecare factură, de la emitere la încărcare", style="Section.TLabel").pack(anchor="w", pady=(0, 12))
-        self.history_tree = self.make_tree(self.history_tab, [("package", "Pachet", 120), ("number", "Factură FGO", 150), ("total", "Total", 130), ("state", "Stare", 190), ("message", "Detalii", 420)], 15)
-        bar = ttk.Frame(self.history_tab)
-        bar.pack(fill="x", pady=(14, 0))
-        ttk.Button(bar, text="Deschide factura", command=self.open_invoice).pack(side="left")
-        ttk.Button(bar, text="Asociază după verificare în FGO", command=self.reconcile).pack(side="left", padx=8)
-        ttk.Button(bar, text="Am verificat: factura NU există", command=self.release_uncertain).pack(side="left")
-        ttk.Button(bar, text="Backup istoric", command=self.backup).pack(side="right")
-        ttk.Label(self.history_tab, text="Un răspuns pierdut la emitere rămâne blocat până verifici FGO. Pentru încărcări nereușite, selectează pachetul în Comenzi și apasă din nou butonul 2.", wraplength=1070, foreground=MUTED).pack(anchor="w", pady=14)
 
     def make_reports(self):
         ttk.Label(self.reports_tab, text="Vânzări pe țări și top 5 produse", style="Section.TLabel").pack(anchor="w", pady=(0, 10))
+        ttk.Label(self.reports_tab, text="Sursă curentă: comenzile sincronizate local. Rapoartele complete din FGO necesită acces la API-ul de raportare / OAuth, încă neconfigurat.", foreground=MUTED, wraplength=1080).pack(anchor="w", pady=(0,10))
+        year_bar = ttk.Frame(self.reports_tab)
+        year_bar.pack(fill="x", pady=(0,8))
+        ttk.Label(year_bar,text="An").pack(side="left")
+        self.report_year = tk.StringVar(master=self,value=str(date.today().year))
+        ttk.Spinbox(year_bar,from_=2000,to=2100,textvariable=self.report_year,width=6).pack(side="left",padx=8)
+        ttk.Button(year_bar,text="Tot anul",command=self.report_whole_year).pack(side="left")
         filters = ttk.Frame(self.reports_tab)
         filters.pack(fill="x", pady=(0, 10))
         self.report_start = tk.StringVar(master=self, value=date.today().replace(day=1).isoformat())
@@ -477,6 +460,17 @@ class App(tk.Tk):
         self.product_report_tree = self.make_tree(self.reports_tab,[("rank","Loc",60),("code","Cod produs",170),("name","Produs",390),("qty","Bucăți",90),("total","Vânzări cu TVA",150),("currency","Monedă",85)],5)
         self.report_message = tk.StringVar(master=self)
         ttk.Label(self.reports_tab,textvariable=self.report_message,foreground=MUTED,wraplength=1080).pack(anchor="w",pady=(8,0))
+
+    def report_whole_year(self):
+        try:
+            year = int(self.report_year.get())
+            start, end = date(year,1,1), date(year,12,31)
+        except ValueError:
+            self.report_message.set("Introdu un an valid.")
+            return
+        self.report_start.set(start.isoformat())
+        self.report_end.set(end.isoformat())
+        self.refresh_reports()
 
     def refresh_reports(self):
         if not hasattr(self,"country_report_tree"):
@@ -518,102 +512,30 @@ class App(tk.Tk):
         text.configure(state="disabled")
 
     def refresh(self):
-        if not hasattr(self, "history_tree"):
-            return
-        records = self.store.records()
-        raws = self.store.orders()
-        self.raw_by_id = {package_id(r): r for r in raws}
-        self.ready_ids = []
-        self.errors = {}
-        selected = self.order_tree.selection()
-        self.order_tree.delete(*self.order_tree.get_children())
-        visible = set()
-        for raw in raws:
-            pid = package_id(raw)
-            target = country(raw)
-            rec = records.get(pid)
-            try:
-                total = dec(raw.get("packageGrossAmount")) - dec(raw.get("packageSellerDiscount"))
-                display_total = f"{total:.2f} {raw.get('currencyCode', '')}"
-            except ValueError:
-                display_total = "De verificat"
-            if rec:
-                state = STATES.get(rec["state"], rec["state"])
-                self.errors[pid] = rec["error"]
-                if rec["state"] in REISSUABLE:
-                    try:
-                        build_draft(raw, self.mapping, self.settings)
-                        self.ready_ids.append(pid)
-                    except ValueError as exc:
-                        self.errors[pid] = str(exc)
-            else:
-                try:
-                    build_draft(raw, self.mapping, self.settings)
-                    self.ready_ids.append(pid)
-                    state = "Pregătită*"
-                except ValueError as exc:
-                    state = "De verificat"
-                    self.errors[pid] = str(exc)
-            haystack = json.dumps(raw, ensure_ascii=False).lower()
-            if self.search.get().strip().lower() not in haystack or self.market_filter.get() not in {"Toate piețele", target}:
-                continue
-            visible.add(pid)
-            customer = (raw.get("invoiceAddress") or {}).get("fullName") or "—"
-            tag = "done" if rec and rec["state"] in {"issued", "uploaded"} else "blocked" if pid in self.errors and self.errors[pid] else ""
-            self.order_tree.insert("", "end", iid=pid, values=(f"{raw.get('orderNumber', '')} / {pid}", target, customer, display_total, raw.get("shipmentPackageStatus", raw.get("status", "")), state), tags=(tag,))
-        for var, count in zip(self.card_vars, [len(raws), len(self.ready_ids), sum(r["state"] in {"issued", "upload_failed", "upload_uncertain"} for r in records.values()), sum(r["state"] in {"uploaded", "remote_invoice"} for r in records.values())]):
-            var.set(str(count))
-        self.order_tree.selection_set([x for x in selected if x in visible])
-        self.history_tree.delete(*self.history_tree.get_children())
-        for pid, rec in records.items():
-            inv = rec["invoice"] or {}
-            d = rec["draft"]
-            detail = rec["error"] or rec["updated"]
-            if d.get("net_ron") is None:
-                detail += " • EUR direct în FGO; plafon nemonitorizat"
-            self.history_tree.insert("", "end", iid=pid, values=(pid, f"{inv.get('series', '')} {inv.get('number', '')}", f"{d['total']} {d['currency']}", STATES.get(rec["state"], rec["state"]), detail))
+        if not hasattr(self,"emag_tab"):return
+        self.trendyol_tab.refresh();self.emag_tab.refresh()
+        raws=self.store.orders()+self.emag_tab.store.orders()
+        records={**self.store.records(),**self.emag_tab.store.records()}
+        self.refresh_pending(raws,records)
         self.mapping_tree.delete(*self.mapping_tree.get_children())
-        for p in self.mapping.values():
-            verified = not p.fgo_code or p.fgo_verified
-            self.mapping_tree.insert("", "end", values=(p.barcode, p.fgo_code, p.name if verified else "De preluat din FGO", p.unit if verified else "", str(p.vat) if verified else ""), tags=() if verified else ("blocked",))
-        self.mapping_label.configure(text=f"{len(self.mapping)} produse încărcate")
-        modes = {"demo": "DEMO • FĂRĂ FACTURI REALE", "test": "TEST • FGO UAT + TRENDYOL STAGE", "production": "PRODUCȚIE • FACTURI REALE"}
-        self.badge.configure(text=modes[self.settings.mode], bg="#fff0d5" if self.settings.mode != "production" else "#dcefe8")
-        fiscal_mode = "EUR direct în FGO • plafon EUR nemonitorizat" if self.settings.eur_direct_fgo else "TVA RO • monitorizare plafon UE"
-        prefix = "Exemple fictive, fără apeluri API." if self.settings.mode == "demo" else f"Cont {self.settings.seller_id or 'neconfigurat'} • {len(self.mapping)} produse mapate."
-        self.notice.configure(text=prefix + "  " + fiscal_mode + ". Starea actuală a comenzilor se verifică înaintea emiterii.")
-        self.show_selection()
-        self.refresh_pending(raws, records)
-        if hasattr(self,"emag_tab"):
-            self.emag_tab.refresh()
+        for platform,mapping in [("Trendyol",self.mapping),("eMAG",self.emag_tab.mapping)]:
+            for p in mapping.values():
+                if p.barcode=="__transport__":continue
+                verified=not p.fgo_code or p.fgo_verified
+                self.mapping_tree.insert("","end",values=(platform,p.barcode,p.fgo_code,p.name if verified else "De preluat din FGO",p.unit if verified else "",str(p.vat) if verified else ""))
+        self.mapping_label.configure(text=f"{len(self.mapping)} EAN Trendyol • {sum(e!='__transport__' for e in self.emag_tab.mapping)} EAN eMAG")
+        modes={"demo":"DEMO • FĂRĂ FACTURI REALE","test":"TEST • FGO UAT + TRENDYOL STAGE","production":"PRODUCȚIE • FACTURI REALE"}
+        self.badge.configure(text=modes[self.settings.mode],bg="#fff0d5" if self.settings.mode!="production" else "#dcefe8")
         self.refresh_reports()
 
-    def show_selection(self, event=None):
-        ids = self.order_tree.selection()
-        self.selection_text.set(f"{len(ids)} pachete selectate • Ctrl / Shift pentru selecție multiplă")
-        detail = "Selectează o comandă pentru a vedea suma de facturat și eventualele probleme."
-        if len(ids) == 1:
-            pid = ids[0]
-            raw = self.raw_by_id.get(pid, {})
-            detail = f"Valoarea vânzărilor: {raw.get('packageGrossAmount', '—')}  −  reducerea comerciantului: {raw.get('packageSellerDiscount', '—')} {raw.get('currencyCode', '')}.\n"
-            if self.errors.get(pid):
-                detail += self.errors[pid]
-            else:
-                detail += "Produse: " + "; ".join(f"{x.get('quantity')} × {self.mapping[str(x.get('barcode'))].name if str(x.get('barcode')) in self.mapping else x.get('barcode')}" for x in raw.get("lines", []))
-        self.detail.configure(state="normal")
-        self.detail.delete("1.0", "end")
-        self.detail.insert("1.0", detail)
-        self.detail.configure(state="disabled")
 
-    def select_ready(self):
-        self.order_tree.selection_set([x for x in self.ready_ids if self.order_tree.exists(x)])
 
     def run_job(self, title, work, done):
         if self.busy:
             return
         self.busy = True
         self.status_text.set(title)
-        for button in (self.sync_button, self.issue_button, self.upload_button, self.pending_button, self.save_button, self.articles_button):
+        for button in (self.save_button, self.articles_button):
             button.configure(state="disabled")
         def runner():
             try:
@@ -631,7 +553,7 @@ class App(tk.Tk):
                     self.status_text.set(data)
                     continue
                 self.busy = False
-                for button in (self.sync_button, self.issue_button, self.upload_button, self.pending_button, self.save_button, self.articles_button):
+                for button in (self.save_button, self.articles_button):
                     button.configure(state="normal")
                 self.refresh()
                 self.status_text.set("Operațiune încheiată. Rezultatele sunt păstrate în Istoric.")
@@ -644,36 +566,36 @@ class App(tk.Tk):
             pass
         self.poll_id = self.after(120, self.poll)
 
-    def sync(self):
-        if self.busy:
-            return
-        try:
-            start, end = date.fromisoformat(self.start_date.get()), date.fromisoformat(self.end_date.get())
-        except ValueError:
-            messagebox.showerror("Interval", "Folosește date în format AAAA-LL-ZZ.", parent=self)
-            return
-        service = self.service()
-        def done(result):
-            count, errors = result
-            self.mapping = service.mapping
-            self.refresh()
-            messagebox.showinfo("Sincronizare", f"{count} pachete preluate." + ("\n\nProbleme de sincronizare:\n" + "\n".join(errors[:20]) if errors else ""), parent=self)
-        self.run_job("Preiau comenzile…", lambda progress: service.sync(start, end, progress), done)
 
     def selected(self):
-        ids = list(dict.fromkeys(self.pending_packages[i] for i in self.pending_tree.selection())) if self.notebook.select() == str(self.pending_tab) else self.order_tree.selection()
-        if not ids:
-            messagebox.showinfo("Selectează comenzile", "Selectează unul sau mai multe pachete din tabel.", parent=self)
-        return list(ids)
+        ids=list(dict.fromkeys(self.pending_packages[i] for i in self.pending_tree.selection()))
+        if not ids:messagebox.showinfo("Selectează comenzile","Selectează unul sau mai multe rânduri din De facturat.",parent=self)
+        return ids
+
+    def service_for_pid(self,pid):
+        return self.emag_tab.service() if pid.startswith("emag:") else self.service()
+
+    def prepare_selected(self,ids):
+        drafts,errors,extra=[],[],Decimal("0")
+        from .store import claim_conflicts
+        claimed=set()
+        for pid in dict.fromkeys(ids):
+            try:
+                service=self.service_for_pid(pid)
+                d=service.draft(service.store.order(pid),extra)
+                if any(claim_conflicts(a,b) for a in claimed for b in d.source_lines):raise ValueError("Lotul conține aceleași bucăți în două colete.")
+                claimed.update(d.source_lines)
+                drafts.append(d)
+                if d.net_ron is not None:extra+=d.net_ron
+            except ValueError as exc:errors.append(f"{pid}: {exc}")
+        if any(d.net_ron is None for d in drafts) and any(d.country!="RO" and d.net_ron is not None for d in drafts):
+            errors.append("Lotul combină EUR fără echivalent RON cu facturi pentru care plafonul trebuie monitorizat. Reconciliază valorile RON înaintea unui lot mixt.")
+        return drafts,errors
 
     def preview_only(self):
-        if self.busy:
-            return
-        ids = self.selected()
-        if not ids:
-            return
-        drafts, errors = self.service().prepare(ids)
-        self.preview_dialog(drafts, errors, None)
+        if self.busy:return
+        ids=self.selected()
+        if ids:self.preview_dialog(*self.prepare_selected(ids),None)
 
     def preview_dialog(self, drafts, errors, confirm):
         dialog = tk.Toplevel(self)
@@ -690,7 +612,8 @@ class App(tk.Tk):
         for d in drafts:
             totals[d.currency] += d.total
             client = d.payload["Client"]
-            body.insert("end", f"COMANDA {d.order_number} / Pachet {d.package_id} • {d.country}\n{client['Denumire']}\n{client['Adresa']}, {client['Localitate']}, {client.get('Judet', '')} {client['Tara']}\nSerie: {d.payload['Serie']} • Data: {d.payload['DataEmitere']}\n")
+            platform = "eMAG" if d.package_id.startswith("emag:") else "Trendyol"
+            body.insert("end", f"{platform} • COMANDA {d.order_number} / Pachet {d.package_id} • {d.country}\n{client['Denumire']}\n{client['Adresa']}, {client['Localitate']}, {client.get('Judet', '')} {client['Tara']}\nSerie: {d.payload['Serie']} • Data: {d.payload['DataEmitere']}\n")
             for line in d.payload["Continut"]:
                 body.insert("end", f"  {line['NrProduse']} {line['UM']} × {line['Denumire']} | TVA {line['CotaTVA']}% | cu TVA {line['PretTotal']} {d.currency}\n")
             body.insert("end", f"Bază estimată {d.net} + TVA estimat {d.vat} = DE FACTURAT {d.total} {d.currency}\nPlătit de client: {d.customer_paid}; finanțat de marketplace: {d.subsidy}.\n\n")
@@ -711,97 +634,51 @@ class App(tk.Tk):
             ttk.Button(bar, text="Simulează emiterea" if self.settings.mode == "demo" else "Emite facturile verificate", style="Primary.TButton", command=approved).pack(side="left")
 
     def create_invoices(self):
-        if self.busy:
-            return
-        ids = self.selected()
-        if not ids:
-            return
-        service = self.service()
-        drafts, errors = service.prepare(ids)
+        if self.busy:return
+        ids=self.selected()
+        if not ids:return
+        drafts,errors=self.prepare_selected(ids)
+        services={d.package_id:self.service_for_pid(d.package_id) for d in drafts}
         def confirmed(approved):
             def work(progress):
-                count, failures = 0, []
-                for i, d in enumerate(approved, 1):
-                    progress(f"Emit factura {i}/{len(approved)} • pachet {d.package_id}…")
-                    try:
-                        service.issue(d)
-                        count += 1
-                    except Exception as exc:
-                        failures.append(f"{d.package_id}: {exc}")
-                        # Stop the batch when one emission fails; remaining orders are untouched.
-                        break
-                return count, failures, len(approved)-count-len(failures)
+                count=0;failures=[]
+                for d in approved:
+                    progress(f"Emit factura pentru {d.package_id}…")
+                    try:services[d.package_id].issue(d);count+=1
+                    except Exception as exc:failures.append(f"{d.package_id}: {exc}");break
+                return count,failures,len(approved)-count-len(failures)
             def done(result):
-                count, failures, remaining = result
-                messagebox.showinfo("Facturare", f"{count} facturi {'simulate' if self.settings.mode == 'demo' else 'emise'}. {remaining} pachete neprocesate." + ("\n\n"+"\n".join(failures) if failures else "\nPoți folosi acum butonul 2 pentru încărcare."), parent=self)
-            self.run_job("Emit facturile…", work, done)
-        self.preview_dialog(drafts, errors, confirmed)
+                count,failed,remaining=result
+                messagebox.showinfo("Facturare",f"{count} facturi procesate. {remaining} comenzi neprocesate."+("\n\n"+"\n".join(failed) if failed else "\nÎncarcă facturile din tabul platformei respective."),parent=self)
+            self.run_job("Emit facturile selectate…",work,done)
+        self.preview_dialog(drafts,errors,confirmed)
 
-    def upload_invoices(self):
-        if self.busy:
-            return
-        ids = self.selected()
-        if not ids:
-            return
-        ready = []
-        for pid in ids:
-            rec = self.store.record(pid)
-            if rec and rec["invoice"] and rec["state"] in {"issued", "uploaded", "upload_failed", "upload_uncertain", "remote_conflict"}:
-                ready.append(pid)
-        if not ready:
-            messagebox.showinfo("Încărcare", "Selecția nu conține facturi emise care așteaptă încărcarea.", parent=self)
-            return
-        details = "\n".join(f"Pachet {pid} → {self.store.record(pid)['invoice']['series']} {self.store.record(pid)['invoice']['number']}" for pid in ready[:20])
-        if not messagebox.askokcancel("Încarcă în Trendyol", f"{'Simulez încărcarea' if self.settings.mode == 'demo' else 'Trimit linkurile facturilor'} pentru {len(ready)} pachete:\n\n{details}", parent=self):
-            return
-        service = self.service()
-        def work(progress):
-            successes, failures = 0, []
-            for i, pid in enumerate(ready, 1):
-                progress(f"Încarc factura {i}/{len(ready)} • pachet {pid}…")
-                try:
-                    service.upload(pid)
-                    successes += 1
-                except Exception as exc:
-                    failures.append(f"{pid}: {exc}")
-            return successes, failures
-        def done(result):
-            count, failures = result
-            messagebox.showinfo("Încărcare", f"{count} facturi {'simulate ca încărcate' if self.settings.mode == 'demo' else 'încărcate'}." + ("\n\n"+"\n".join(failures) if failures else ""), parent=self)
-        self.run_job("Încarc facturile…", work, done)
 
     def import_mapping(self):
-        if self.busy:
-            return
-        path = filedialog.askopenfilename(title="Selectează maparea produselor", filetypes=[("Excel", "*.xlsx")], parent=self)
-        if not path:
-            return
+        if self.busy:return
+        path=filedialog.askopenfilename(title="Mapare comună Trendyol + eMAG",filetypes=[("Excel","*.xlsx")],parent=self)
+        if not path:return
         try:
-            products = load_mapping(path)
-            # Keep a stable app-owned copy; changes in the original require a new import.
-            target = self.data_dir / "profiles" / self.settings.scope() / "mapare.xlsx"
-            if Path(path).resolve() != target.resolve():
-                shutil.copy2(path, target)
-            updated = Settings(**{**asdict(self.settings), "mapping_path": str(target)})
-            save_settings(self.settings_path, updated)
-            self.settings = updated
-            self.fields["mapping_path"].set(str(target))
-            self.mapping = products
-            self.refresh()
-            self.status_text.set(f"Mapare importată: {len(products)} produse.")
-            if any(p.fgo_code for p in products.values()) and self.settings.mode != "demo":
-                self.fetch_articles()
-        except Exception as exc:
-            messagebox.showerror("Import respins", str(exc), parent=self)
+            products=load_shared_mapping(path)
+            target=self.data_dir/"profiles"/self.settings.scope()/"mapare_comuna.xlsx"
+            if Path(path).resolve()!=target.resolve():shutil.copy2(path,target)
+            updated=Settings(**{**asdict(self.settings),"unified_mapping_path":str(target)})
+            save_settings(self.settings_path,updated);self.settings=updated
+            self.fields["unified_mapping_path"].set(str(target))
+            self.mapping=products["trendyol"]
+            self.emag_tab.profile=None;self.emag_tab.open_profile();self.emag_tab.mapping=products["emag"]
+            self.refresh();self.fetch_articles()
+        except Exception as exc:messagebox.showerror("Mapare comună",str(exc),parent=self)
 
     def save_template(self):
-        path = filedialog.asksaveasfilename(title="Salvează modelul Excel", initialfile="Model_mapare_coduri.xlsx", defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")], parent=self)
+        if self.busy:return
+        path=filedialog.asksaveasfilename(title="Exportă maparea comună",initialfile="Mapare_comuna.xlsx",defaultextension=".xlsx",filetypes=[("Excel","*.xlsx")],parent=self)
         if path:
             try:
-                shutil.copy2(resource("assets/Model_mapare_coduri.xlsx"), path)
-                self.status_text.set(f"Modelul Excel a fost salvat în {path}.")
-            except OSError as exc:
-                messagebox.showerror("Model Excel", str(exc), parent=self)
+                e=self.emag_tab.mapping if self.settings.unified_mapping_path else {}
+                write_shared_mapping(path,shared_rows(self.mapping,e))
+                self.status_text.set("Excel comun exportat. Completează EAN-urile și importă fișierul actualizat.")
+            except Exception as exc:messagebox.showerror("Export mapare",str(exc),parent=self)
 
     def reload_config(self):
         if self.busy:
@@ -847,66 +724,10 @@ class App(tk.Tk):
             messagebox.showerror("Setări", str(exc), parent=self)
             return False
 
-    def history_selected(self):
-        ids = self.history_tree.selection()
-        if len(ids) != 1:
-            messagebox.showinfo("Selectează o factură", "Selectează exact un rând din Istoric.", parent=self)
-            return None
-        return ids[0]
 
-    def open_invoice(self):
-        pid = self.history_selected()
-        if not pid:
-            return
-        rec = self.store.record(pid)
-        if not rec["invoice"]:
-            messagebox.showinfo("Factură", "Nu există încă un document asociat.", parent=self)
-        elif self.settings.mode == "demo":
-            messagebox.showinfo("Factură demonstrativă", "În modul demo factura este simulată. Linkul PDF real este returnat numai de FGO.", parent=self)
-        else:
-            webbrowser.open(rec["invoice"]["url"])
 
-    def reconcile(self):
-        if self.busy:
-            return
-        pid = self.history_selected()
-        if not pid:
-            return
-        rec = self.store.record(pid)
-        if rec["state"] not in {"uncertain", "rejected"}:
-            messagebox.showinfo("Asociere", "Folosește această acțiune pentru emiteri incerte sau respinse.", parent=self)
-            return
-        series = simpledialog.askstring("Factură existentă", "Seria facturii din FGO:", parent=self)
-        number = simpledialog.askstring("Factură existentă", "Numărul exact al facturii (inclusiv zerourile):", parent=self) if series else None
-        if not series or not number:
-            return
-        draft = rec["draft"]
-        if not messagebox.askyesno("Verificare factură", f"Ai verificat în FGO că {series} {number} aparține pachetului {pid}, are clientul și produsele corecte, totalul {draft['total']} {draft['currency']} și data {draft['payload']['DataEmitere']}?\n\nAPI-ul de print confirmă existența documentului, fără a verifica totalul.", parent=self):
-            return
-        service = self.service()
-        self.run_job("Verific documentul în FGO…", lambda _: service.reconcile(pid, series, number), lambda _: messagebox.showinfo("Asociere", "Factura a fost asociată. Poți încărca linkul în Trendyol.", parent=self))
 
-    def release_uncertain(self):
-        if self.busy:
-            return
-        pid = self.history_selected()
-        if pid and messagebox.askyesno("Confirmă verificarea manuală", f"Ai căutat în FGO după comandă, client și dată și ai confirmat că NU există factura pentru pachetul {pid}?\n\nAceastă acțiune permite o nouă cerere de emitere.", parent=self):
-            try:
-                self.service().confirm_not_issued(pid)
-                self.refresh()
-            except ValueError as exc:
-                messagebox.showerror("Verificare", str(exc), parent=self)
 
-    def backup(self):
-        if self.busy:
-            return
-        path = filedialog.asksaveasfilename(title="Backup istoric", initialfile=f"Istoric-{self.settings.scope()}-{date.today()}.sqlite3", defaultextension=".sqlite3", parent=self)
-        if path:
-            if Path(path).resolve() == self.store.path.resolve():
-                messagebox.showerror("Backup", "Alege un fișier diferit de baza de date activă.", parent=self)
-                return
-            self.store.backup(path)
-            self.status_text.set("Backup salvat. Conține datele clienților; păstrează-l într-un loc protejat.")
 
     def close_app(self):
         if self.busy:

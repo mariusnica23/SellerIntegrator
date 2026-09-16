@@ -1,18 +1,21 @@
 SELLERINTEGRATOR — GHID DE UTILIZARE
 Versiunea 16.09.2026 | Windows | Trendyol + eMAG → FGO
 
-1. COMENZI — TRENDYOL
+1. TRENDYOL ȘI eMAG — ACEEAȘI STRUCTURĂ
+Ambele taburi au Comenzi & facturare și Istoric. Sus se află perioada, Preia comenzi, Configurare și Mapare comună. Caută după comandă, colet, client sau EAN. Acțiunile de facturare și încărcare se aplică platformei deschise.
+
+TRENDYOL
 Alege perioada și apasă Preia comenzi. Aplicația citește piețele active, actualizează datele locale și verifică existența facturilor FGO asociate și încărcarea lor în Trendyol. Intervalul API este limitat la ultimele 30 de zile; comenzile preluate anterior rămân în istoricul local.
 Caută numărul comenzii sau barcode-ul. Selectează cu Ctrl / Shift. Previzualizare arată clientul, produsele, cantitățile, TVA, moneda și totalul.
-1 Creează facturile în FGO: deschide verificarea lotului selectat.
+Facturează comenzile selectate: deschide verificarea lotului selectat.
 Emite facturile verificate: creează efectiv documentele în FGO în mediul production. În demo simulează.
-2 Încarcă facturile în Trendyol: transmite documentele deja emise, după confirmare.
-3 Lista de facturat: actualizează comenzile și deschide lista detaliată.
+Încarcă facturile în Trendyol: transmite documentele deja emise, după confirmare.
 
 Numărul comenzii este unic, dar o comandă poate avea mai multe colete. Fiecare colet are propriul ID și propria factură. Bucățile individuale se verifică separat la split: clientul, produsul și suma identice nu blochează trei colete distincte. O bucată deja facturată nu poate fi facturată din nou.
 
 2. DE FACTURAT
-Lista cu toate câmpurile care vor fi trimise la emitere: client, adresă, țară, produse, cod FGO, cantitate, UM, TVA, total, monedă, serie și verificări. Conține colete în expediere/livrate fără factură asociată sau cu emitere respinsă / factură confirmată ca ștearsă.
+Lista comună pentru ambele platforme, cu o coloană Platformă și toate câmpurile care vor fi trimise la emitere: client, adresă, țară, EAN, produse, cod FGO, cantitate, UM, TVA, total, monedă, serie și verificări. Conține colete Trendyol în expediere/livrate și comenzi eMAG finalizate fără factură asociată sau cu emitere respinsă / factură confirmată ca ștearsă.
+Actualizează ambele platforme folosește perioadele din taburile respective; eMAG este omis dacă nu are utilizator configurat. Poți selecta comenzi de pe ambele platforme în același lot; fiecare comandă/colet are propria factură.
 Bifează comenzile dorite și apasă Facturează comenzi selectate. Se selectează toate liniile coletului. Bara orizontală permite vizualizarea tuturor coloanelor.
 Problemele lotului trebuie corectate înaintea emiterii. Simpla prezență în listă nu înseamnă că documentul poate fi emis.
 
@@ -21,7 +24,7 @@ Configurarea se face în Parametrizare → Date de bază & conexiuni → eMAG RO
 Acces API: eMAG Marketplace → Contul meu → Profil → Detalii tehnice → Adrese IP → Adaugă un nou IP. Folosește IP-ul public al rețelei calculatorului pe care rulează programul. Utilizatorul trebuie să aibă drepturi API. Dacă acestea lipsesc, solicită activarea la suportul eMAG. Câmpul API Code și adresele callback nu sunt cerute de aplicație.
 
 Preia comenzi eMAG: filtrează după data modificării, maximum un an, fără date viitoare. Fluxul facturează comenzi finalizate (status API 4), livrate de vânzător (tip 3), către persoane fizice. Finalizată nu reprezintă o confirmare separată a livrării către client.
-Mapare articole: exportă modelul cu product_id din comenzile preluate, completează cod_fgo ca TEXT, reimportă și preia articolele din FGO. Poți folosi RO:123, BG:123, HU:123 pentru asocieri specifice pieței; 123 se aplică tuturor piețelor unde nu există o asociere specifică.
+Mapare comună: folosește EAN-ul din coloana ean_emag. Dacă lipsește din comandă, aplicația citește EAN-ul prin product_offer/read folosind product_id numai pentru identificarea ofertei API. Produsul facturat este ales după EAN. Dacă mai multe EAN-uri ale aceleiași oferte indică articole FGO diferite, facturarea este oprită.
 Facturează comenzile selectate: previzualizează și confirmă. Încarcă facturile în eMAG: atașează documentele FGO deja emise.
 Istoric eMAG: documente, stări, deschidere PDF și recuperarea emiterilor incerte după verificarea FGO.
 
@@ -33,7 +36,9 @@ B2B, FBE, SGR și storno se procesează separat. Integrarea nu modifică stocuri
 Salvează (Ctrl+S) păstrează câmpurile la fiecare deschidere. Reîncarcă setările revine la ultima salvare. Parolele sunt protejate cu Windows DPAPI. La salvare se păstrează și copia precedentă settings.backup.json.
 Datele sunt în %LOCALAPPDATA%/TrendyolFGO. Programul poate fi actualizat fără ștergerea lor. Nu distribui folderul de date altor persoane.
 
-Mapare Excel Trendyol: două coloane TEXT — barcode și cod_fgo. Denumirea, UM și TVA sunt citite din FGO. Prețul și cantitatea vin din comandă. Importul păstrează o copie locală a Excelului; modificările ulterioare ale originalului necesită reimport.
+Mapare Excel comună: trei coloane TEXT — cod_fgo, ean_trendyol, ean_emag. Un rând asociază articolul FGO cu EAN-ul folosit pe fiecare platformă; una dintre cele două platforme poate rămâne goală. Același EAN poate apărea o singură dată pe platformă. Mai multe EAN-uri pot indica același articol FGO, pe rânduri separate. Păstrează zerourile de la început.
+Exportă Excel comun creează fișierul cu asocierile curente. Completează și importă-l cu Importă Excel comun, apoi Preia articolele din FGO. Denumirea, UM și TVA sunt citite din FGO; prețul și cantitatea vin din comandă. Importul păstrează o copie locală; schimbările ulterioare ale originalului necesită reimport.
+Maparea Trendyol veche cu EAN și cod FGO este convertită automat când nu există o mapare eMAG veche. Originalul și parametrizările sunt păstrate. Mapările vechi incompatibile rămân active până la importarea Excelului comun; identificatorii product_id vechi nu sunt transformați în EAN-uri presupuse.
 Conexiuni API: mediu demo / test / production, Seller ID și cheile Trendyol; CUI fără RO, cheia privată FGO, URL-ul integrării înregistrat în FGO și seriile pentru fiecare țară. URL-ul integrării este un identificator acceptat în contul FGO; nu inventa un site comercial.
 Istoricul Trendyol este separat după mediu, CUI și Seller ID; istoricul eMAG după mediu și CUI. Schimbarea identității poate afișa alt profil. Revenirea la datele anterioare regăsește istoricul.
 
@@ -41,7 +46,7 @@ TVA & plafon UE: confirmă regimul fiscal, completează anul, vânzările UE ant
 EUR direct în FGO: se aplică numai sumelor deja în EUR. Suma se transmite către FGO în EUR; cursul local și verificarea plafonului sunt omise. RON rămâne RON. Plafonul trebuie urmărit separat. Facturile EUR fără echivalent RON local nu sunt considerate zero; revenirea la monitorizare, inclusiv pentru HUF, necesită reconcilierea lor.
 Curs HUF: se completează pentru 1 HUF, nu pentru 100 HUF, în configurarea eMAG. Actualizează și data cursului în TVA & plafon UE.
 
-5. ISTORIC ȘI FACTURI ȘTERSE
+5. ISTORIC ȘI FACTURI ȘTERSE — ÎN FIECARE TAB DE PLATFORMĂ
 Preia comenzi verifică documentele asociate local chiar și când comanda nu apare în intervalul ales.
 Factura există în FGO, dar a fost ștearsă din marketplace: revine la Emisă în FGO; selecteaz-o și încarcă din nou. Nu este necesară o factură nouă.
 Factura a fost ștearsă din ambele sisteme: după confirmarea explicită FGO și confirmarea lipsei din marketplace, apare Lipsește din FGO — de refăcut. Documentul vechi rămâne arhivat local; poți reface previzualizarea.
@@ -53,7 +58,8 @@ Verifică în FGO: răspunsul la emitere s-a pierdut. Verifică în contul FGO. 
 Backup istoric salvează baza locală. Configurarea și mapările sunt fișiere separate. DPAPI permite decriptarea cheilor numai cu utilizatorul Windows corespunzător.
 
 6. RAPOARTE
-Alege data comenzii, țara și marketplace-ul. Actualizează raportul recalculează din comenzile stocate local; pentru date recente folosește mai întâi Preia comenzi.
+Alege datele de început/sfârșit sau un an și Tot anul, apoi țara și marketplace-ul. Actualizează raportul recalculează din comenzile stocate local; pentru date recente folosește mai întâi Preia comenzi.
+Sursa curentă este afișată explicit: comenzi locale. Totalurile nu reprezintă toate facturile FGO pe an. Preluarea completă, exclusiv automată prin API, necesită acces și documentație suplimentare de la FGO; API-ul public de facturare nu documentează listarea facturilor pe perioadă. Vezi ACCES_RAPOARTE_FGO.md pentru cererea pregătită către furnizor.
 Trendyol: implicit colete livrate; poți include și în expediere. eMAG: comenzi finalizate, fără confirmare separată de livrare.
 Vânzări pe țări: comenzi distincte, colete, bucăți și valoare cu TVA după reducerile comerciantului, înainte de comision. Monedele se afișează separat; nu se adună RON cu EUR sau HUF.
 Top 5: produse după valoarea vânzărilor, separat pe monedă. Același cod FGO grupează produsele mapate între marketplace-uri. Transportul intră în totalul țării, dar nu în topul produselor și nici în numărul bucăților.

@@ -22,7 +22,7 @@ jobs:
         run: |
           $process = Start-Process -FilePath dist/TrendyolFGO/TrendyolFGO.exe -ArgumentList '--data-dir', '.qa/smoke', '--smoke-test' -PassThru -Wait -WindowStyle Hidden
           if ($process.ExitCode -ne 0) { throw 'Smoke test failed' }
-          Copy-Item README.md, GHID.md dist/TrendyolFGO/
+          Copy-Item README.md, GHID.md, ACCES_RAPOARTE_FGO.md dist/TrendyolFGO/
           Compress-Archive -Path dist/TrendyolFGO -DestinationPath SellerIntegrator-Windows.zip
       - uses: actions/upload-artifact@v4
         with:
