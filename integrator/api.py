@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import socket
+import threading
 import time
 from urllib import error, parse, request
 
@@ -68,11 +69,30 @@ class NoRedirect(request.HTTPRedirectHandler):
         return None
 
 
+class RequestPacer:
+    """Share provider limits across clients, orders and marketplace tabs."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.last_calls = {}
+
+    def wait(self, host, interval):
+        with self.lock:
+            previous = self.last_calls.get(host)
+            if previous is not None:
+                started, previous_interval = previous
+                delay = started + max(interval, previous_interval) - time.monotonic()
+                if delay > 0:
+                    time.sleep(delay)
+            self.last_calls[host] = (time.monotonic(), interval)
+
+
+REQUEST_PACER = RequestPacer()
+
+
 class Transport:
     def __init__(self, secret_values=()):
         self.opener = request.build_opener(NoRedirect())
         self.secrets = [s for s in secret_values if s]
-        self.last_calls = {}
 
     def redact(self, message):
         result = str(message)
@@ -85,8 +105,7 @@ class Transport:
         host = parse.urlsplit(url).hostname
         attempts = 3 if read_only else 1
         for attempt in range(attempts):
-            time.sleep(max(0, self.last_calls.get(host, 0) + interval - time.monotonic()))
-            self.last_calls[host] = time.monotonic()
+            REQUEST_PACER.wait(host, interval)
             data = json_wire(body).encode("utf-8") if body is not None else None
             h = {"Accept": "application/json", "Content-Type": "application/json", **(headers or {})}
             req = request.Request(url, data=data, headers=h, method=method)
@@ -107,8 +126,8 @@ class Transport:
                     time.sleep(min(30, int(retry) if retry.isdigit() else 2 ** (attempt+1)))
                     continue
                 # Response text is not persisted: it may contain credentials or customer data.
-                explanation = {401: "Autentificare respinsă. Verifică cheile și mediul.", 403: "Acces refuzat. Verifică permisiunile/IP-ul pentru mediul de test.", 409: "Conflict: factura sau linkul poate exista deja. Verifică asocierea.", 429: "Limită API atinsă. Reîncearcă mai târziu.", 426: "Endpointul necesită actualizare."}.get(exc.code, "Cerere respinsă de serviciu. Verifică setările și documentul.")
-                raise ApiError(f"HTTP {exc.code}: {explanation}", exc.code, not read_only and exc.code >= 500) from None
+                explanation = {401: "Autentificare respinsă. Verifică cheile și mediul.", 403: "Acces refuzat. Verifică permisiunile/IP-ul pentru mediul de test.", 409: "Cerere în conflict. Codul 409 singur nu confirmă existența unei facturi. Verifică rezultatul înainte de reîncercare.", 429: "Limită API atinsă. Reîncearcă mai târziu.", 426: "Endpointul necesită actualizare."}.get(exc.code, "Cerere respinsă de serviciu. Verifică setările și documentul.")
+                raise ApiError(f"{host} • HTTP {exc.code}: {explanation}", exc.code, not read_only and (exc.code == 409 or exc.code >= 500)) from None
             except (error.URLError, TimeoutError, socket.timeout, ConnectionError, OSError):
                 if read_only and attempt + 1 < attempts:
                     time.sleep(2 ** (attempt+1))

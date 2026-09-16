@@ -77,6 +77,12 @@ class Store:
 
     def recover(self):
         with self.connect() as db:
+            # Older builds treated every HTTP 409 as a definitive rejection and
+            # released its claims. The HTTP code alone does not prove non-issuance.
+            for row in db.execute("SELECT id,draft FROM invoices WHERE state='rejected' AND error LIKE '%HTTP 409%'").fetchall():
+                db.execute("UPDATE invoices SET state='uncertain',error=? WHERE id=?", ("FGO a returnat HTTP 409 la emitere. Rezultatul anterior nu este confirmat. Verifică factura în FGO; apoi asociază documentul sau confirmă că nu a fost emis.", row["id"]))
+                for line_id in json.loads(row["draft"])["source_lines"]:
+                    db.execute("INSERT OR IGNORE INTO line_claims VALUES (?,?)", (line_id,row["id"]))
             db.execute("UPDATE invoices SET state='uncertain', error='Aplicația s-a închis în timpul emiterii. Verifică factura în FGO.' WHERE state='issuing'")
             db.execute("UPDATE invoices SET state='upload_uncertain', error='Încărcare întreruptă. Reia pentru verificarea linkului din Trendyol.' WHERE state='uploading'")
 

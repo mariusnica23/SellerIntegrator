@@ -27,6 +27,7 @@ Instrucțiuni pentru fiecare tab: [GHID.md](GHID.md).
 - Catalog local persistent: denumirea, UM, TVA și EAN-urile ofertelor deja citite sunt reutilizate după redeschidere. Butonul **Reîmprospătează din FGO** recitește articolele după modificări în FGO. Verificările comenzilor și facturilor rămân active.
 - Rapoarte: vânzări pe țări și top 5 produse după valoare, separat pe monede, cu filtre de perioadă și marketplace.
 - Previzualizare și confirmare explicită înaintea emiterii. Încărcarea facturii este un pas separat.
+- Limitarea cererilor API este comună întregii aplicații, inclusiv în loturile mixte. Conflictele HTTP 409 la emitere rămân pentru verificare în FGO; codul HTTP singur nu confirmă o factură duplicată.
 
 ## Domeniu și limite
 

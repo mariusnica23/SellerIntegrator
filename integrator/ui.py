@@ -646,7 +646,13 @@ class App(tk.Tk):
         ids=self.selected()
         if not ids:return
         drafts,errors=self.prepare_selected(ids)
-        services={d.package_id:self.service_for_pid(d.package_id) for d in drafts}
+        platform_services = {}
+        services = {}
+        for draft in drafts:
+            provider = "emag" if draft.package_id.startswith("emag:") else "trendyol"
+            if provider not in platform_services:
+                platform_services[provider] = self.service_for_pid(draft.package_id)
+            services[draft.package_id] = platform_services[provider]
         def confirmed(approved):
             def work(progress):
                 return issue_batch(approved,services,progress)

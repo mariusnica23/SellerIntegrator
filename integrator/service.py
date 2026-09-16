@@ -184,7 +184,7 @@ class Service:
         try:
             invoice = fgo.issue(draft.payload)
         except ApiError as exc:
-            self.store.transition(draft.package_id, "uncertain" if exc.uncertain else "rejected", error=str(exc))
+            self.store.transition(draft.package_id, "uncertain" if exc.uncertain or exc.status == 409 else "rejected", error=str(exc))
             raise
         except Exception:
             self.store.transition(draft.package_id, "uncertain", error="Rezultat necunoscut. Verifică factura în FGO înaintea unei alte emiteri.")

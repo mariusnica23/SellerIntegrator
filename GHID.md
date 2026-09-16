@@ -19,6 +19,7 @@ Actualizează ambele platforme folosește perioadele din taburile respective; eM
 Bifează comenzile dorite și apasă Facturează comenzi selectate. Se selectează toate liniile coletului. Bara orizontală permite vizualizarea tuturor coloanelor.
 Problemele lotului trebuie corectate înaintea emiterii. Simpla prezență în listă nu înseamnă că documentul poate fi emis.
 După confirmarea previzualizării, o eroare la o comandă nu oprește încercarea celorlalte comenzi selectate. Rezultatul afișează separat comenzile cu erori. O emitere cu rezultat incert nu este reîncercată automat; rămâne pentru verificare în FGO.
+Pauzele dintre cererile API se păstrează pentru întregul lot, inclusiv între platforme și conexiuni noi. La FGO, cererile de facturare sunt distanțate cu minimum 1,1 secunde. HTTP 409 singur nu dovedește că există o factură: în Istoric apare Verifică în FGO. Dacă documentul există, folosește Asociază factură existentă; dacă ai verificat că nu există, confirmă lipsa din Istoric înainte de reemitere. Erorile 409 salvate de versiunile vechi sunt trecute automat la verificare.
 
 3. eMAG
 Configurarea se face în Parametrizare → Date de bază & conexiuni → eMAG RO / BG / HU. Completează utilizator, parolă și serie FGO pentru fiecare piață activă, apoi Salvează.
